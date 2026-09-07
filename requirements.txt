@@ -1,5 +1,5 @@
 fastembed==0.5.1
-groq==0.18.0
+fastapi==0.115.8
 numpy==2.2.3
 pandas==2.2.3
 python-dotenv==1.0.1
@@ -10,4 +10,3 @@ streamlit==1.42.0
 torch==2.6.0
 tqdm==4.67.1
 uvicorn==0.34.0
-fastapi==0.115.8

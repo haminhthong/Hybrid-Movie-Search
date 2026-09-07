@@ -1,0 +1,4 @@
+{"query_id":"test_known_001","query":"a grieving father enters a wormhole to find a way to save humanity and reach his children","query_type":"known_item","judgments":{"157336":3}}
+{"query_id":"test_known_002","query":"a film about a lonely office worker who falls for an artificial intelligence voice","query_type":"known_item","judgments":{"152601":3}}
+{"query_id":"test_entity_001","query":"Christopher Nolan movie about a thief who shares a dream with a target and manipulates time","query_type":"named_entity","judgments":{"27205":3}}
+{"query_id":"test_theme_001","query":"quiet stories about strangers forming a temporary bond while far from home","query_type":"theme","judgments":{"153":3,"4348":2,"152601":1}}

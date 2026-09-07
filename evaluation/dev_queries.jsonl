@@ -1,0 +1,5 @@
+{"query_id":"dev_known_001","query":"a movie where astronauts leave Earth and a father tries to communicate with his daughter across time","query_type":"known_item","judgments":{"157336":3}}
+{"query_id":"dev_known_002","query":"the Nolan film about two rival magicians whose obsession with a secret destroys their lives","query_type":"known_item","judgments":{"1124":3}}
+{"query_id":"dev_entity_001","query":"the science fiction movie directed by Christopher Nolan with Matthew McConaughey and Anne Hathaway","query_type":"named_entity","judgments":{"157336":3}}
+{"query_id":"dev_theme_001","query":"a melancholic story about loneliness and finding human connection in a near future city","query_type":"theme","judgments":{"152601":3,"153":2,"4348":1}}
+{"query_id":"dev_theme_002","query":"a surreal thriller about dreams within dreams and a team planting an idea","query_type":"theme","judgments":{"27205":3,"310":1}}

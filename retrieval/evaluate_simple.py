@@ -1,4 +1,8 @@
-"""So sánh baseline BM25 và dense trên tập truy vấn có một nhãn đúng."""
+"""Regression benchmark legacy cho BM25 và dense trên synthetic query set.
+
+Tập này dùng để bắt regression/sanity check; metric headline của project nằm ở
+``evaluation/benchmark.py`` với graded judgments trên Dev và Locked Test.
+"""
 
 import argparse
 import logging

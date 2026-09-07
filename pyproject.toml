@@ -8,14 +8,32 @@ version = "0.1.0"
 description = "Hybrid semantic movie search with BM25, dense retrieval, RRF and reranking"
 requires-python = ">=3.10"
 dependencies = [
-  "fastapi==0.115.8", "fastembed==0.5.1", "groq==0.18.0", "numpy==2.2.3", "pandas==2.2.3",
-  "python-dotenv==1.0.1", "qdrant-client==1.13.2", "requests==2.32.3",
-  "sentence-transformers==3.4.1", "streamlit==1.42.0", "torch==2.6.0", "tqdm==4.67.1",
-  "uvicorn==0.34.0"
+  "fastapi==0.115.8",
+  "fastembed==0.5.1",
+  "numpy==2.2.3",
+  "pandas==2.2.3",
+  "python-dotenv==1.0.1",
+  "qdrant-client==1.13.2",
+  "requests==2.32.3",
+  "sentence-transformers==3.4.1",
+  "streamlit==1.42.0",
+  "torch==2.6.0",
+  "tqdm==4.67.1",
+  "uvicorn==0.34.0",
 ]
 
 [project.optional-dependencies]
-dev = ["ruff==0.9.7", "pytest>=8.0.0", "pytest-cov>=5.0.0"]
+dev = ["pytest>=8.0.0", "pytest-cov>=5.0.0", "ruff==0.9.7"]
+experiments = ["groq==0.18.0"]
+
+[project.scripts]
+moviescout-build-index = "scripts.build_index:main"
+moviescout-validate-index = "scripts.validate_index:main"
+moviescout-evaluate-dev = "scripts.evaluate_dev:main"
+moviescout-evaluate-final = "scripts.evaluate_final:main"
+
+[tool.setuptools.packages.find]
+include = ["app*", "pipeline*", "retrieval*", "evaluation*", "experiments*", "scripts*"]
 
 [tool.ruff]
 line-length = 110

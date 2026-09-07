@@ -1,29 +1,20 @@
-"""Module tương tác trực tiếp với cơ sở dữ liệu Vector Qdrant.
-
-Cung cấp các hàm thực hiện tìm kiếm vector tương đồng (vector search) cho nhánh
-Dense Vector, nhánh Sparse Vector (BM25) và hàm Hybrid Search thực thi song song
-bằng đa luồng (ThreadPoolExecutor) để tối ưu hóa hiệu năng.
-"""
+"""Tầng truy cập Qdrant cho alias index hiện tại."""
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
 
-from .config import COLLECTION_NAME, settings
+from .config import settings
+from .manifest import load_manifest, validate_manifest
 
 logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
 def get_client() -> Any:
-    """Tạo hoặc lấy ra kết nối đơn thể (singleton) tới Qdrant Client.
+    """Tạo một Qdrant client dùng chung trong process."""
 
-    Sử dụng `@lru_cache(maxsize=1)` để tái sử dụng connection pool trong suốt tiến trình.
-
-    Returns:
-        QdrantClient: Đối tượng client tương tác với dịch vụ Qdrant.
-    """
     from qdrant_client import QdrantClient
 
     settings.require_qdrant()
@@ -34,25 +25,83 @@ def get_client() -> Any:
     )
 
 
+def _collection_dense_size(collection_info: Any) -> int | None:
+    """Đọc số chiều dense từ các dạng response Qdrant khác nhau."""
+
+    try:
+        vectors = collection_info.config.params.vectors
+        dense = vectors.get("dense") if isinstance(vectors, dict) else vectors
+        return int(dense.size)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def validate_index_contract(client: Any | None = None) -> dict[str, Any]:
+    """Kiểm tra manifest, alias, point count và dense dimension trước khi query."""
+
+    manifest = load_manifest()
+    validate_manifest(manifest)
+    qdrant = client or get_client()
+    try:
+        aliases = qdrant.get_aliases().aliases
+        active_collection = next(
+            (item.collection_name for item in aliases if item.alias_name == settings.index_alias),
+            None,
+        )
+        if active_collection != manifest["collection"]:
+            raise RuntimeError(
+                f"Alias {settings.index_alias!r} đang trỏ tới {active_collection!r}, "
+                f"manifest yêu cầu {manifest['collection']!r}."
+            )
+        collection_info = qdrant.get_collection(settings.index_alias)
+        count = int(qdrant.count(collection_name=settings.index_alias, exact=True).count)
+    except Exception as exc:
+        raise RuntimeError("Alias/index Qdrant chưa sẵn sàng.") from exc
+
+    if count != int(manifest["point_count"]):
+        raise RuntimeError(
+            "Point count của index không khớp manifest: "
+            f"expected={manifest['point_count']}, actual={count}."
+        )
+    dense_size = _collection_dense_size(collection_info)
+    if dense_size is not None and dense_size != settings.dense_dimension:
+        raise RuntimeError(
+            "Dense dimension của index không khớp model: "
+            f"expected={settings.dense_dimension}, actual={dense_size}."
+        )
+    if manifest["collection"] == settings.index_alias:
+        raise RuntimeError("Manifest phải trỏ tới collection versioned, không phải alias phục vụ traffic.")
+    return manifest
+
+
+def check_readiness() -> dict[str, Any]:
+    """Trả thông tin readiness khi toàn bộ model/index contract hợp lệ."""
+
+    manifest = validate_index_contract()
+    return {
+        "status": "ready",
+        "index_version": manifest["index_version"],
+        "collection": manifest["collection"],
+        "point_count": manifest["point_count"],
+    }
+
+
 def _query(
     vector: Any,
     vector_name: str,
     limit: int,
     query_filter: Any | None = None,
+    *,
+    check_contract: bool = True,
 ) -> list[dict[str, Any]]:
-    """Thực hiện truy vấn lấy các điểm dữ liệu (points) tương đồng nhất từ Qdrant.
+    """Query một vector space trên alias đã được kiểm tra contract."""
 
-    Args:
-        vector: Vector dense (list float) hoặc vector sparse (models.SparseVector).
-        vector_name: Tên không gian vector ("dense" hoặc "sparse").
-        limit: Số lượng điểm tối đa cần trả về.
-        query_filter: Bộ lọc điều kiện Qdrant Filter (nếu có).
-
-    Returns:
-        List[Dict[str, Any]]: Danh sách các từ điển chứa point id, score tương đồng và payload metadata.
-    """
+    if limit <= 0:
+        return []
+    if check_contract:
+        validate_index_contract()
     response = get_client().query_points(
-        collection_name=COLLECTION_NAME,
+        collection_name=settings.index_alias,
         using=vector_name,
         query=vector,
         query_filter=query_filter,
@@ -74,39 +123,39 @@ def dense_search(
     vector: list[float],
     query_filter: Any | None = None,
     limit: int | None = None,
+    *,
+    check_contract: bool = True,
 ) -> list[dict[str, Any]]:
-    """Tìm kiếm tương đồng theo vector Dense (ngữ nghĩa).
+    """Tìm ứng viên theo dense vector."""
 
-    Args:
-        vector: Vector dense biểu diễn câu truy vấn.
-        query_filter: Bộ lọc Qdrant Filter (ví dụ: lọc năm, thể loại).
-        limit: Số kết quả tối đa. Mặc định lấy theo settings.retrieval_k.
-
-    Returns:
-        Danh sách kết quả tìm kiếm từ nhánh Dense.
-    """
-    return _query(vector, "dense", limit or settings.retrieval_k, query_filter)
+    return _query(
+        vector,
+        "dense",
+        settings.retrieval_k if limit is None else limit,
+        query_filter,
+        check_contract=check_contract,
+    )
 
 
 def sparse_search(
     vector: tuple[list[int], list[float]],
     query_filter: Any | None = None,
     limit: int | None = None,
+    *,
+    check_contract: bool = True,
 ) -> list[dict[str, Any]]:
-    """Tìm kiếm tương đồng theo vector Sparse (BM25 từ khóa).
+    """Tìm ứng viên theo sparse BM25 vector."""
 
-    Args:
-        vector: Tuple gồm (indices, values) biểu diễn sparse BM25.
-        query_filter: Bộ lọc Qdrant Filter.
-        limit: Số kết quả tối đa. Mặc định lấy theo settings.retrieval_k.
-
-    Returns:
-        Danh sách kết quả tìm kiếm từ nhánh Sparse.
-    """
     from qdrant_client import models
 
     sparse = models.SparseVector(indices=vector[0], values=vector[1])
-    return _query(sparse, "sparse", limit or settings.retrieval_k, query_filter)
+    return _query(
+        sparse,
+        "sparse",
+        settings.retrieval_k if limit is None else limit,
+        query_filter,
+        check_contract=check_contract,
+    )
 
 
 def hybrid_search(
@@ -115,43 +164,41 @@ def hybrid_search(
     query_filter: Any | None = None,
     limit: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Thực thi tìm kiếm song song cả hai nhánh Dense và Sparse thông qua ThreadPoolExecutor.
+    """Chạy song song hai nhánh, cho phép graceful degradation một nhánh."""
 
-    Nếu một trong hai nhánh gặp lỗi hệ thống, nhánh còn lại vẫn sẽ trả kết quả dự phòng (graceful degradation).
-    Chỉ ném ra lỗi RuntimeError nếu cả hai nhánh đều không hoạt động.
+    search_limit = settings.retrieval_k if limit is None else limit
+    if search_limit <= 0:
+        return [], []
 
-    Args:
-        dense_vector: Vector dense của truy vấn.
-        sparse_vector: Tuple sparse BM25 của truy vấn.
-        query_filter: Bộ lọc kết hợp theo năm / thể loại phim.
-        limit: Số lượng kết quả ứng viên trả về cho mỗi nhánh.
+    # Verify một lần trước khi fan-out để không nhân đôi request readiness.
+    validate_index_contract()
 
-    Returns:
-        Tuple chứa danh sách kết quả (dense_results, sparse_results).
-
-    Raises:
-        RuntimeError: Khi cả hai nhánh truy vấn đều gặp ngoại lệ.
-    """
-    search_limit = limit or settings.retrieval_k
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {
-            "dense": pool.submit(dense_search, dense_vector, query_filter, search_limit),
-            "sparse": pool.submit(sparse_search, sparse_vector, query_filter, search_limit),
+            "dense": pool.submit(
+                dense_search,
+                dense_vector,
+                query_filter,
+                search_limit,
+                check_contract=False,
+            ),
+            "sparse": pool.submit(
+                sparse_search,
+                sparse_vector,
+                query_filter,
+                search_limit,
+                check_contract=False,
+            ),
         }
-        results: dict[str, list[dict[str, Any]]] = {}
+        results: dict[str, list[dict[str, Any]]] = {"dense": [], "sparse": []}
         errors: list[Exception] = []
-
         for name, future in futures.items():
             try:
                 results[name] = future.result()
             except Exception as exc:
-                logger.exception("Nhánh truy hồi %s gặp lỗi", name)
-                results[name] = []
+                logger.exception("Nhánh retrieval %s gặp lỗi", name)
                 errors.append(exc)
 
     if len(errors) == 2:
-        raise RuntimeError(
-            "Không thể truy vấn cơ sở dữ liệu Qdrant ở cả 2 nhánh Dense và Sparse."
-        ) from errors[0]
-
+        raise RuntimeError("Không thể truy vấn Qdrant ở cả hai nhánh dense và sparse.") from errors[0]
     return results["dense"], results["sparse"]

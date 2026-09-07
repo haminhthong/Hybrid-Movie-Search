@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from pipeline.clean import clean_text, create_combined_text
+from pipeline.clean import clean_text, create_combined_text, parse_list_value
 from retrieval.search import parse_year
 
 
@@ -37,6 +37,11 @@ def test_create_combined_text():
     assert "Title: Interstellar" in combined
     assert "Director: Christopher Nolan" in combined
     assert "Overview: A team of explorers travels through a wormhole." in combined
+
+
+def test_parse_list_value_supports_json_and_legacy_csv():
+    assert parse_list_value('["Action", "Drama"]') == ["Action", "Drama"]
+    assert parse_list_value("Action, Drama") == ["Action", "Drama"]
 
 
 def test_parse_year_single():

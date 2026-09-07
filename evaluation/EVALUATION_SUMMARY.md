@@ -1,4 +1,7 @@
-# BM25 vs Dense Retrieval - Evaluation Report
+# BM25 vs Dense Retrieval - ARCHIVED LEGACY REPORT
+
+> Báo cáo này được giữ để truy vết kết quả cũ. Nó mô tả pipeline trước refactor,
+> không phải contract production v1. Dùng `benchmark.py` với Dev/Locked Test cho số liệu mới.
 
 ## Project Overview
 

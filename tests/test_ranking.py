@@ -1,10 +1,9 @@
-"""Unit tests cho module ranking: RRF fusion, mapping payload và normalize score."""
+"""Test RRF, structured payload và display score."""
 
-from retrieval.ranking import normalize_scores, reciprocal_rank_fusion, to_movies
+from retrieval.ranking import add_display_scores, reciprocal_rank_fusion, to_movies
 
 
-def test_reciprocal_rank_fusion():
-    """Kiểm tra tính điểm RRF và gộp hai danh sách Dense & Sparse."""
+def test_reciprocal_rank_fusion_is_deterministic():
     dense = [
         {"id": "doc1", "score": 0.9, "payload": {"movie_id": 1, "title": "Movie A"}},
         {"id": "doc2", "score": 0.8, "payload": {"movie_id": 2, "title": "Movie B"}},
@@ -14,16 +13,13 @@ def test_reciprocal_rank_fusion():
         {"id": "doc3", "score": 4.0, "payload": {"movie_id": 3, "title": "Movie C"}},
     ]
 
-    fused = reciprocal_rank_fusion(dense, sparse, limit=10)
-    assert len(fused) == 3
-
-    # doc2 xuất hiện ở rank 2 nhánh dense (1/(60+2)) và rank 1 nhánh sparse (1/(60+1)), nên sẽ đứng đầu
-    fused_ids = [item["id"] for item in fused]
-    assert fused_ids[0] == "doc2"
+    fused = reciprocal_rank_fusion(dense, sparse, limit=10, rrf_k=60)
+    assert [item["id"] for item in fused] == ["doc2", "doc1", "doc3"]
+    assert fused[0]["dense_rank"] == 2
+    assert fused[0]["sparse_rank"] == 1
 
 
-def test_to_movies():
-    """Kiểm tra chuyển đổi danh sách payload tài liệu Qdrant thành ứng viên phim."""
+def test_to_movies_keeps_structured_metadata():
     docs = [
         {
             "id": "doc1",
@@ -31,46 +27,28 @@ def test_to_movies():
             "payload": {
                 "movie_id": 101,
                 "title": "Inception",
-                "genres": "Action, Sci-Fi",
+                "genres": ["Action", "Science Fiction"],
+                "cast": ["Leonardo DiCaprio"],
                 "release_year": 2010,
-                "vote_average": 8.8,
                 "document_text": "Overview text...",
             },
         },
-        {
-            "id": "doc1_dup",
-            "score": 0.02,
-            "payload": {
-                "movie_id": 101,  # Trùng movie_id
-                "title": "Inception Duplicate",
-            },
-        },
+        {"id": "doc1_dup", "score": 0.02, "payload": {"movie_id": 101, "title": "Duplicate"}},
     ]
     movies = to_movies(docs)
     assert len(movies) == 1
-    assert movies[0]["movie_id"] == 101
-    assert movies[0]["title"] == "Inception"
-    assert movies[0]["release_year"] == 2010
+    assert movies[0]["genres"] == ["Action", "Science Fiction"]
+    assert movies[0]["cast"] == ["Leonardo DiCaprio"]
 
 
-def test_normalize_scores():
-    """Kiểm tra chuẩn hóa điểm Min-Max scaling về khoảng [0.0, 1.0]."""
+def test_display_score_is_not_named_final_score():
     movies = [
-        {"movie_id": 1, "relevance_score": 10.0},
-        {"movie_id": 2, "relevance_score": 5.0},
-        {"movie_id": 3, "relevance_score": 0.0},
+        {"movie_id": 1, "rerank_score": 10.0},
+        {"movie_id": 2, "rerank_score": 5.0},
+        {"movie_id": 3, "rerank_score": 0.0},
     ]
-
-    normalized = normalize_scores(movies, top_n=3)
-    assert len(normalized) == 3
-    assert normalized[0]["final_score"] == 1.0
-    assert normalized[1]["final_score"] == 0.5
-    assert normalized[2]["final_score"] == 0.0
-
-
-def test_normalize_scores_single_item():
-    """Kiểm tra chuẩn hóa khi chỉ có 1 phần tử (high == low)."""
-    movies = [{"movie_id": 1, "relevance_score": 5.0}]
-    normalized = normalize_scores(movies, top_n=10)
-    assert len(normalized) == 1
-    assert normalized[0]["final_score"] == 1.0
+    results = add_display_scores(movies, top_n=3)
+    assert [movie["rank"] for movie in results] == [1, 2, 3]
+    assert results[0]["display_score"] == 1.0
+    assert results[1]["display_score"] == 0.5
+    assert "final_score" not in results[0]

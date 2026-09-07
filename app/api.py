@@ -1,9 +1,4 @@
-"""FastAPI RESTful API Backend cho dịch vụ MovieScout AI.
-
-Cung cấp các endpoints:
-- GET `/health`: Kiểm tra trạng thái hoạt động của dịch vụ (Health Check).
-- POST `/search`: Tìm kiếm phim ngữ nghĩa thích ứng (Adaptive Semantic Search).
-"""
+"""FastAPI cho production hybrid movie retrieval."""
 
 from functools import lru_cache
 from typing import Annotated, Any
@@ -11,149 +6,139 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
+from retrieval.config import settings
 from retrieval.service import SearchService
+from retrieval.store import check_readiness
 
-# Khởi tạo ứng dụng FastAPI với thông tin mô tả chi tiết cho OpenAPI / Swagger UI
 app = FastAPI(
-    title="MovieScout AI API",
+    title="MovieScout Hybrid Retrieval API",
     description=(
-        "API Tìm kiếm phim ngữ nghĩa lai (Hybrid Semantic Search) kết hợp "
-        "BM25, Dense Vector, RRF, Adaptive Routing, HyDE và Cross-Encoder Reranking."
+        "Tìm kiếm phim bằng BM25 và dense retrieval, RRF fusion, "
+        "Cross-Encoder reranking và bộ lọc metadata. V1 hỗ trợ query tiếng Anh."
     ),
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    version="2.0.0",
 )
 
 
-# === Pydantic Request Models ===
-
-
 class SearchRequest(BaseModel):
-    """Mô hình dữ liệu đầu vào cho yêu cầu tìm kiếm phim."""
+    """Request contract của endpoint search."""
 
     query: str = Field(
         ...,
         min_length=1,
         max_length=500,
-        description="Mô tả nội dung cốt truyện, thể loại hoặc từ khóa phim.",
-        json_schema_extra={
-            "example": "A team of astronauts travels through a wormhole in space to save humanity"
-        },
+        description="Mô tả nội dung phim bằng tiếng Anh.",
+        json_schema_extra={"example": "A father communicates with his daughter through a black hole"},
     )
     top_n: int = Field(
         default=10,
         ge=1,
-        le=50,
-        description="Số lượng bộ phim kết quả tối đa cần trả về (1-50).",
-        json_schema_extra={"example": 10},
+        le=settings.rerank_k,
+        description=f"Số kết quả trả về (1-{settings.rerank_k}).",
     )
-    genre: str = Field(
-        default="",
-        description="Tên thể loại phim muốn lọc (ví dụ: 'Action', 'Sci-Fi'). Để rỗng nếu tìm tất cả.",
-        json_schema_extra={"example": "Science Fiction"},
-    )
-    year: str = Field(
-        default="",
-        description="Năm hoặc khoảng năm phát hành (ví dụ: '2014' hoặc '2010-2020').",
-        json_schema_extra={"example": "2010-2020"},
-    )
-
-
-# === Pydantic Response Models ===
+    genre: str = Field(default="", max_length=80, description="Genre exact-match, bỏ trống để tìm tất cả.")
+    year: str = Field(default="", max_length=20, description="Năm hoặc khoảng năm, ví dụ 2010-2020.")
+    debug: bool = Field(default=False, description="Expose retrieval evidence nội bộ để debug.")
 
 
 class MovieItemResponse(BaseModel):
-    """Mô hình dữ liệu của một bộ phim kết quả."""
+    """Movie metadata và điểm rerank của một kết quả."""
 
-    movie_id: int = Field(..., description="ID duy nhất của phim từ TMDB")
-    title: str = Field(..., description="Tiêu đề bộ phim")
-    genres: str = Field("", description="Danh sách các thể loại phim")
-    release_date: str = Field("", description="Ngày phát hành (YYYY-MM-DD)")
-    release_year: int = Field(0, description="Năm phát hành")
-    vote_average: float = Field(0.0, description="Điểm đánh giá trung bình trên TMDB (0-10)")
-    popularity: float = Field(0.0, description="Chỉ số độ phổ biến TMDB")
-    poster_path: str = Field("", description="Đường dẫn ảnh poster TMDB")
-    document: dict[str, Any] = Field(..., description="Tài liệu văn bản đã mã hóa")
-    relevance_score: float = Field(..., description="Điểm tương quan thô từ RRF / Cross-Encoder")
-    final_score: float = Field(..., description="Điểm tương quan đã chuẩn hóa Min-Max [0.0 - 1.0]")
+    movie_id: int
+    title: str
+    director: str = ""
+    cast: list[str] = Field(default_factory=list)
+    genres: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    overview: str = ""
+    release_date: str = ""
+    release_year: int = 0
+    vote_average: float = 0.0
+    popularity: float = 0.0
+    poster_path: str = ""
+    rank: int
+    rerank_score: float = Field(description="Điểm Cross-Encoder, không phải xác suất.")
+    display_score: float = Field(
+        description="Điểm hiển thị tương đối trong chính result set, không dùng để so sánh query."
+    )
+    evidence: dict[str, Any] | None = None
 
 
 class SearchResponse(BaseModel):
-    """Mô hình dữ liệu trả về cho API tìm kiếm."""
+    """Response contract ổn định cho UI và client."""
 
-    movies: list[MovieItemResponse] = Field(..., description="Danh sách kết quả phim xếp hạng")
-    route: str = Field(..., description="Tuyến xử lý Adaptive Router ('EASY' hoặc 'HARD')")
-    hyde: str | None = Field(None, description="Đoạn văn bản cốt truyện giả định sinh bởi HyDE (nếu có)")
-    latency_ms: float = Field(..., description="Thời gian xử lý phản hồi (tính bằng miligiây)")
+    query: str
+    results: list[MovieItemResponse]
+    index_version: str
+    latency_ms: float
 
 
 class HealthResponse(BaseModel):
-    """Mô hình dữ liệu kiểm tra sức khỏe hệ thống."""
+    """Liveness response, không phụ thuộc Qdrant."""
 
-    status: str = Field("ok", description="Trạng thái hệ thống")
-    service: str = Field("MovieScout AI Search Engine", description="Tên dịch vụ")
+    status: str = "ok"
+    service: str = "MovieScout Hybrid Retrieval"
 
 
-# === Dependency Injection ===
+class ReadyResponse(BaseModel):
+    """Readiness response sau khi kiểm tra model/index contract."""
+
+    status: str
+    index_version: str
+    collection: str
+    point_count: int
 
 
 @lru_cache(maxsize=1)
 def get_service() -> SearchService:
-    """Tạo hoặc trả về đối tượng SearchService đơn thể (Singleton)."""
+    """Tạo SearchService một lần cho process API."""
+
     return SearchService()
 
 
-# === API Endpoints ===
-
-
-@app.get(
-    "/health",
-    response_model=HealthResponse,
-    tags=["System"],
-    summary="Kiểm tra trạng thái hoạt động dịch vụ",
-)
+@app.get("/health", response_model=HealthResponse, tags=["System"])
 def health() -> HealthResponse:
-    """Endpoint kiểm tra sức khỏe của API service."""
-    return HealthResponse(status="ok", service="MovieScout AI Search Engine")
+    """Liveness probe của process."""
+
+    return HealthResponse()
+
+
+@app.get("/ready", response_model=ReadyResponse, tags=["System"])
+def ready() -> ReadyResponse:
+    """Readiness probe: Qdrant, alias, manifest, count và dimension phải hợp lệ."""
+
+    try:
+        return ReadyResponse(**check_readiness())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @app.post(
     "/search",
     response_model=SearchResponse,
-    tags=["Search Engine"],
-    summary="Tìm kiếm phim ngữ nghĩa thích ứng",
+    tags=["Search"],
     responses={
-        422: {"description": "Tham số truy vấn đầu vào không hợp lệ"},
-        503: {"description": "Dịch vụ Qdrant hoặc AI models không sẵn sàng"},
+        422: {"description": "Tham số truy vấn không hợp lệ"},
+        503: {"description": "Qdrant hoặc index contract chưa sẵn sàng"},
     },
 )
 def search(
     request: SearchRequest,
     service: Annotated[SearchService, Depends(get_service)],
 ) -> SearchResponse:
-    """Thực hiện quy trình tìm kiếm phim kết hợp Dense + Sparse retrieval, RRF fusion, Adaptive Routing, HyDE và Reranking.
+    """Chạy Dense/BM25 song song, RRF, Cross-Encoder rồi trả top-N."""
 
-    - **query**: Mô tả cốt truyện phim.
-    - **top_n**: Số phim kết quả mong muốn.
-    - **genre**: Lọc theo thể loại (tùy chọn).
-    - **year**: Lọc theo năm phát hành (tùy chọn).
-    """
     try:
-        raw_result = service.search(
-            query=request.query,
-            top_n=request.top_n,
-            genre=request.genre,
-            year=request.year,
+        return SearchResponse(
+            **service.search(
+                query=request.query,
+                top_n=request.top_n,
+                genre=request.genre,
+                year=request.year,
+                debug=request.debug,
+            )
         )
-        return SearchResponse(**raw_result)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc

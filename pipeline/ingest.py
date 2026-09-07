@@ -5,6 +5,7 @@ Tải thông tin metadata phim bao gồm: Tiêu đề, tóm tắt nội dung (ov
 độ phổ biến (popularity) và hình ảnh poster.
 """
 
+import json
 import logging
 import os
 import time
@@ -14,6 +15,8 @@ from typing import Any
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+
+from .manifest import write_dataset_manifest
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -42,11 +45,12 @@ def _request_json(path: str, params: dict[str, Any]) -> dict[str, Any]:
         RuntimeError: Nếu biến môi trường TMDB_API_KEY chưa được cấu hình.
         requests.RequestException: Nếu có lỗi kết nối mạng hoặc lỗi HTTP status code.
     """
-    if not TMDB_API_KEY:
+    api_key = os.getenv("TMDB_API_KEY", TMDB_API_KEY).strip()
+    if not api_key:
         raise RuntimeError("Thiếu biến môi trường TMDB_API_KEY. Vui lòng thêm khóa API vào tệp .env.")
 
     url = f"{BASE_URL}/{path.lstrip('/')}"
-    query_params = {"api_key": TMDB_API_KEY, **params}
+    query_params = {"api_key": api_key, **params}
 
     response = requests.get(url, params=query_params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
@@ -119,7 +123,7 @@ def fetch_tmdb_movies_by_year(
     max_pages_per_year: int = 10,
     output_file: Path = OUTPUT_FILE,
 ) -> pd.DataFrame:
-    """Thu thập dữ liệu các bộ phim phổ biến từ TMDB phân chia theo phạm vi năm sản xuất.
+    """Thu thập phim có overview trong phạm vi năm, không lọc theo rating.
 
     Args:
         start_year: Năm phát hành bắt đầu.
@@ -149,8 +153,6 @@ def fetch_tmdb_movies_by_year(
                         "page": page,
                         "sort_by": "popularity.desc",
                         "primary_release_year": year,
-                        "vote_count.gte": 100,
-                        "vote_average.gte": 6.5,
                     },
                 )
             except requests.RequestException:
@@ -179,10 +181,10 @@ def fetch_tmdb_movies_by_year(
                         "release_year": _release_year(release_date, year),
                         "vote_average": movie.get("vote_average", 0.0),
                         "popularity": movie.get("popularity", 0.0),
-                        "genres": ", ".join(genres),
+                        "genres": json.dumps(genres, ensure_ascii=False),
                         "director": details["director"],
-                        "cast": ", ".join(details["cast"]),
-                        "keywords": ", ".join(details["keywords"]),
+                        "cast": json.dumps(details["cast"], ensure_ascii=False),
+                        "keywords": json.dumps(details["keywords"], ensure_ascii=False),
                         "original_language": movie.get("original_language", ""),
                         "poster_path": movie.get("poster_path") or "",
                     }
@@ -205,7 +207,22 @@ def fetch_tmdb_movies_by_year(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     dataframe.to_csv(output_file, index=False, encoding="utf-8")
 
-    logger.info("Hoàn tất Ingestion! Đã ghi %d phim vào %s", len(dataframe), output_file)
+    dataset_version = f"tmdb-{pd.Timestamp.utcnow().strftime('%Y%m%d')}"
+    manifest_path = write_dataset_manifest(
+        output_file,
+        dataset_version=dataset_version,
+        start_year=start_year,
+        end_year=end_year,
+        filters={"overview_required": True},
+        movie_count=len(dataframe),
+    )
+
+    logger.info(
+        "Ingestion hoàn tất: %d phim, snapshot=%s, manifest=%s",
+        len(dataframe),
+        output_file,
+        manifest_path,
+    )
     return dataframe
 
 

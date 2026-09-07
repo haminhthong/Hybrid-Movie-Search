@@ -1,0 +1,1 @@
+"""Các CLI của MovieScout."""

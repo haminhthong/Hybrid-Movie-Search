@@ -1,4 +1,6 @@
-# Bao cao danh gia mo hinh truy hoi phim
+# Bao cao danh gia mo hinh truy hoi phim - ARCHIVED LEGACY REPORT
+
+Artifact lịch sử của Adaptive/HyDE pipeline; không dùng làm claim production v1.
 
 ## Cau hinh danh gia
 - So query: 200

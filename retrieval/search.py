@@ -1,87 +1,79 @@
-"""Module điều phối (Orchestration) toàn bộ pipeline tìm kiếm phim thích ứng.
-
-Thực hiện luồng xử lý thông minh (Adaptive Routing):
-1. Mã hóa truy vấn -> Hybrid Search (Dense + Sparse) -> Reciprocal Rank Fusion (RRF).
-2. Kiểm tra độ tự tin kết quả (Confidence Score Router):
-   - Tuyến EASY: Điểm top 1 cao và khoảng cách với top 2 lớn (Confidence Gap) -> Trả về kết quả ngay lập tức để tiết kiệm chi phí/latency.
-   - Tuyến HARD: Kết quả chưa đủ độ tự tin -> Kích hoạt HyDE mở rộng truy vấn qua LLM + Chạy Cross-Encoder Rerank để xếp hạng lại ứng viên.
-"""
+"""Orchestrator của production retrieval: Dense + BM25 → RRF → Cross-Encoder."""
 
 import re
 from typing import Any
 
 from .config import settings
-from .hyde import HyDEProcessor
 from .query import QueryEncoder
-from .ranking import normalize_scores, reciprocal_rank_fusion, to_movies
+from .ranking import add_display_scores, reciprocal_rank_fusion, to_movies
 from .rerank import CrossEncoderReranker
 from .store import hybrid_search
 
 
 def parse_year(value: str) -> tuple[int, int]:
-    """Phân tích cú pháp chuỗi năm phát hành (ví dụ: "2014" hoặc "2000-2020" hoặc "2000 to 2020").
+    """Phân tích năm đơn hoặc khoảng năm trong khoảng hợp lệ của dữ liệu phim."""
 
-    Args:
-        value: Chuỗi nhập vào từ giao diện hoặc API đại diện cho năm/khoảng năm.
-
-    Returns:
-        Tuple[int, int]: Cặp (năm_bắt_đầu, năm_kết_thúc).
-
-    Raises:
-        ValueError: Nếu định dạng chuỗi không hợp lệ hoặc năm ngoài khoảng 1888-2100.
-    """
+    if not isinstance(value, str):
+        raise ValueError("Định dạng năm không hợp lệ. Dùng YYYY hoặc YYYY-YYYY, ví dụ 2010-2020.")
     match = re.fullmatch(r"\s*(\d{4})(?:\s*(?:-|to)\s*(\d{4}))?\s*", value, re.IGNORECASE)
     if not match:
         raise ValueError(
-            "Định dạng năm không hợp lệ. Vui lòng nhập năm dạng YYYY (vd: 2014) hoặc YYYY-YYYY (vd: 2010-2020)."
+            "Định dạng năm không hợp lệ. Dùng YYYY hoặc YYYY-YYYY, ví dụ 2010-2020."
         )
 
-    start, end = int(match.group(1)), int(match.group(2) or match.group(1))
-
+    start = int(match.group(1))
+    end = int(match.group(2) or match.group(1))
     if start > end:
         raise ValueError("Năm bắt đầu không được lớn hơn năm kết thúc.")
-
     if not 1888 <= start <= end <= 2100:
         raise ValueError("Khoảng năm phải nằm trong từ năm 1888 đến 2100.")
-
     return start, end
 
 
 def build_filter(genre: str = "", year: str = "") -> Any | None:
-    """Tạo bộ lọc điều kiện (Qdrant Filter) theo thể loại và năm phát hành.
+    """Tạo Qdrant filter với genre categorical exact-match và year range."""
 
-    Args:
-        genre: Tên thể loại phim (ví dụ: "Action", "Sci-Fi"). Nếu là "All" hoặc rỗng sẽ bỏ qua.
-        year: Chuỗi lọc năm (ví dụ: "2014" hoặc "2010-2020").
-
-    Returns:
-        Optional[models.Filter]: Đối tượng filter của Qdrant hoặc None nếu không có điều kiện nào.
-    """
     from qdrant_client import models
 
     conditions: list[Any] = []
+    normalized_genre = genre.strip()
+    if normalized_genre and normalized_genre.casefold() != "all":
+        # genres trong payload là mảng keyword; MatchValue kiểm tra phần tử chính xác.
+        conditions.append(
+            models.FieldCondition(
+                key="genres",
+                match=models.MatchValue(value=normalized_genre),
+            )
+        )
 
-    # Lọc thể loại nếu có
-    if genre and genre != "All":
-        conditions.append(models.FieldCondition(key="genres", match=models.MatchText(text=genre)))
-
-    # Lọc khoảng năm phát hành
     if year.strip():
         start, end = parse_year(year)
-        conditions.append(models.FieldCondition(key="release_year", range=models.Range(gte=start, lte=end)))
+        conditions.append(
+            models.FieldCondition(
+                key="release_year",
+                range=models.Range(gte=start, lte=end),
+            )
+        )
 
     return models.Filter(must=conditions) if conditions else None
 
 
 class MovieSearch:
-    """Động cơ tìm kiếm phim ngữ nghĩa thích ứng (Adaptive Semantic Movie Search Engine)."""
+    """Chạy canonical online retrieval, không route query và không gọi LLM."""
 
-    def __init__(self) -> None:
-        """Khởi tạo và duy trì các mô hình trong bộ nhớ ứng dụng (QueryEncoder, HyDEProcessor)."""
-        self.encoder = QueryEncoder()
-        # Dùng chung mô hình Dense Encoder cho HyDE để tối ưu RAM
-        self.hyde = HyDEProcessor(settings.groq_api_key, self.encoder.dense_model)
-        self.reranker: CrossEncoderReranker | None = None
+    def __init__(
+        self,
+        encoder: QueryEncoder | None = None,
+        reranker: CrossEncoderReranker | None = None,
+    ) -> None:
+        self.encoder = encoder or QueryEncoder()
+        model_name = getattr(self.encoder, "dense_model_name", None)
+        dimension = getattr(self.encoder, "dense_dimension", None)
+        if isinstance(model_name, str) and model_name != settings.dense_model:
+            raise RuntimeError("QueryEncoder không tương thích với dense model/index contract.")
+        if isinstance(dimension, (int, float)) and int(dimension) != settings.dense_dimension:
+            raise RuntimeError("QueryEncoder không tương thích với dense model/index contract.")
+        self.reranker = reranker
 
     def _candidates(
         self,
@@ -89,15 +81,59 @@ class MovieSearch:
         sparse_vector: tuple[list[int], list[float]],
         query_filter: Any | None,
     ) -> list[dict[str, Any]]:
-        """Thực hiện hybrid search trên Qdrant và gộp kết quả bằng RRF."""
-        dense, sparse = hybrid_search(dense_vector, sparse_vector, query_filter)
-        return to_movies(reciprocal_rank_fusion(dense, sparse))
+        """Lấy 50 kết quả mỗi nhánh, fusion rồi giữ 30 candidate đầu."""
+
+        dense, sparse = hybrid_search(
+            dense_vector,
+            sparse_vector,
+            query_filter,
+            limit=settings.retrieval_k,
+        )
+        fused = reciprocal_rank_fusion(
+            dense,
+            sparse,
+            limit=settings.candidate_k,
+            rrf_k=settings.rrf_k,
+        )
+        return to_movies(fused)
 
     def _get_reranker(self) -> CrossEncoderReranker:
-        """Nạp lười (Lazy loading) mô hình CrossEncoderReranker khi có truy vấn HARD đầu tiên."""
+        """Nạp lười Cross-Encoder, nhưng luôn dùng nó trong production path."""
+
         if self.reranker is None:
             self.reranker = CrossEncoderReranker()
         return self.reranker
+
+    @staticmethod
+    def _public_movie(movie: dict[str, Any], debug: bool = False) -> dict[str, Any]:
+        """Loại evidence nội bộ khỏi response thông thường."""
+
+        public_fields = (
+            "movie_id",
+            "title",
+            "director",
+            "cast",
+            "genres",
+            "keywords",
+            "overview",
+            "release_date",
+            "release_year",
+            "vote_average",
+            "popularity",
+            "poster_path",
+            "rank",
+            "rerank_score",
+            "display_score",
+        )
+        result = {field: movie[field] for field in public_fields if field in movie}
+        if debug:
+            result["evidence"] = {
+                "dense_rank": movie.get("dense_rank"),
+                "sparse_rank": movie.get("sparse_rank"),
+                "rrf_rank": movie.get("rrf_rank"),
+                "rrf_score": movie.get("rrf_score"),
+            }
+        return result
 
     def search(
         self,
@@ -105,69 +141,23 @@ class MovieSearch:
         top_n: int = 10,
         genre: str = "",
         year: str = "",
+        debug: bool = False,
     ) -> dict[str, Any]:
-        """Thực hiện quy trình tìm kiếm đầy đủ với bộ điều tuyến thích ứng (Adaptive Router).
+        """Tìm phim theo pipeline cố định Dense/BM25 → RRF → Cross-Encoder."""
 
-        Args:
-            query: Mô hình hay câu miêu tả cốt truyện phim từ người dùng.
-            top_n: Số lượng phim kết quả mong muốn trả về. Mặc định 10.
-            genre: Thể loại phim muốn lọc. Mặc định "" (tất cả).
-            year: Khoảng năm sản xuất muốn lọc (dạng "2014" hoặc "2010-2020").
+        if not 0 < top_n <= settings.rerank_k:
+            raise ValueError(f"top_n phải nằm trong khoảng 1-{settings.rerank_k}.")
 
-        Returns:
-            Dict chứa:
-            - movies (List[Dict]): Danh sách phim kèm điểm tương quan đã chuẩn hóa.
-            - route (str): Phân tuyến xử lý ("EASY" hoặc "HARD").
-            - hyde (Optional[str]): Nội dung tóm tắt giả định sinh bởi HyDE (nếu thuộc tuyến HARD).
-
-        Raises:
-            ValueError: Nếu tham số top_n <= 0 hoặc truy vấn rỗng.
-        """
-        if top_n <= 0:
-            raise ValueError("Số lượng phim top_n phải lớn hơn 0.")
-
-        # 1. Làm sạch truy vấn & mã hóa vector
         clean_query, dense_vector, sparse_vector = self.encoder.encode(query)
-        query_filter = build_filter(genre, year)
-
-        # 2. Truy hồi vòng 1 (Hybrid Search + RRF Fusion)
-        candidates = self._candidates(dense_vector, sparse_vector, query_filter)
-
-        # 3. Đánh giá độ tự tin (Confidence Router)
+        candidates = self._candidates(dense_vector, sparse_vector, build_filter(genre, year))
         if not candidates:
-            return {
-                "movies": [],
-                "route": "EASY",
-                "hyde": None,
-            }
+            return {"query": clean_query, "results": [], "index_version": settings.index_version}
 
-        top_score = candidates[0]["relevance_score"]
-        runner_up = candidates[1]["relevance_score"] if len(candidates) > 1 else top_score
-
-        # Điểm RRF tối thiểu và khoảng cách giữa top 1 & top 2 đủ lớn -> Tuyến EASY
-        is_easy_route = (
-            top_score >= settings.minimum_score and (top_score - runner_up) >= settings.confidence_gap
-        )
-
-        if is_easy_route:
-            return {
-                "movies": normalize_scores(candidates, top_n),
-                "route": "EASY",
-                "hyde": None,
-            }
-
-        # 4. Tuyến HARD: Mở rộng truy vấn HyDE + Cross-Encoder Reranking
-        hyde_vector, hypothetical = self.hyde.expand(clean_query)
-
-        # Nếu sinh được văn bản HyDE khác với câu gốc, chạy lại truy hồi lai với hyde_vector
-        if hypothetical != clean_query:
-            candidates = self._candidates(hyde_vector, sparse_vector, query_filter)
-
-        # Rerank danh sách ứng viên thông qua Cross-Encoder
-        candidates = self._get_reranker().rerank(clean_query, candidates)
-
+        # Cross-Encoder chỉ thấy fusion candidates; không rerank toàn bộ catalog.
+        reranked = self._get_reranker().rerank(clean_query, candidates[: settings.rerank_k])
+        results = add_display_scores(reranked, top_n)
         return {
-            "movies": normalize_scores(candidates, top_n),
-            "route": "HARD",
-            "hyde": hypothetical if hypothetical != clean_query else None,
+            "query": clean_query,
+            "results": [self._public_movie(movie, debug) for movie in results],
+            "index_version": settings.index_version,
         }
