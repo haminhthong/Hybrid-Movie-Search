@@ -6,11 +6,12 @@ from retrieval.query import QueryEncoder
 from retrieval.search import MovieSearch, build_filter
 
 
-def test_build_filter_uses_exact_genre_match():
+def test_build_filter_uses_case_insensitive_exact_genre_match():
     q_filter = build_filter(genre="Action")
     assert q_filter is not None
     assert len(q_filter.must) == 1
-    assert q_filter.must[0].match.value == "Action"
+    assert q_filter.must[0].key == "genre_keys"
+    assert q_filter.must[0].match.value == "action"
 
 
 def test_build_filter_year_only():

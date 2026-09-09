@@ -95,7 +95,9 @@ def _prepare_collection(client: QdrantClient, collection_name: str, dense_size: 
         "director": models.PayloadSchemaType.KEYWORD,
         "cast": models.PayloadSchemaType.KEYWORD,
         "genres": models.PayloadSchemaType.KEYWORD,
+        "genre_keys": models.PayloadSchemaType.KEYWORD,
         "keywords": models.PayloadSchemaType.KEYWORD,
+        "dataset_version": models.PayloadSchemaType.KEYWORD,
         "release_date": models.PayloadSchemaType.TEXT,
         "release_year": models.PayloadSchemaType.INTEGER,
         "document_schema_version": models.PayloadSchemaType.KEYWORD,
@@ -137,7 +139,16 @@ def _validate_collection(
     if not smoke.points:
         raise RuntimeError("Smoke query không trả về kết quả.")
     payload = smoke.points[0].payload or {}
-    required_payload = {"movie_id", "title", "genres", "cast", "director", "document_schema_version"}
+    required_payload = {
+        "movie_id",
+        "title",
+        "genres",
+        "genre_keys",
+        "cast",
+        "director",
+        "document_schema_version",
+        "dataset_version",
+    }
     missing_payload = required_payload.difference(payload)
     if missing_payload:
         raise RuntimeError(
@@ -174,7 +185,7 @@ def process_dual_embedding(input_file: Path = INPUT_FILE) -> dict[str, Any]:
         raise FileNotFoundError(f"Không tìm thấy tệp dữ liệu sạch: {input_path}")
 
     dataframe = pd.read_csv(input_path)
-    required = {"movie_id", "combined_text"}
+    required = {"movie_id", "combined_text", "dataset_version", "document_schema_version"}
     missing = required.difference(dataframe.columns)
     if missing:
         raise ValueError(f"Dữ liệu thiếu các cột bắt buộc: {', '.join(sorted(missing))}")
@@ -187,7 +198,24 @@ def process_dual_embedding(input_file: Path = INPUT_FILE) -> dict[str, Any]:
     dataframe = dataframe[dataframe["combined_text"].map(normalize_document).str.len() > 0]
     if dataframe.empty:
         raise ValueError("Không có movie document hợp lệ để tạo index.")
-
+    dataset_versions = {
+        str(value).strip()
+        for value in dataframe["dataset_version"].dropna().tolist()
+        if str(value).strip()
+    }
+    if len(dataset_versions) != 1:
+        raise ValueError("Dữ liệu sạch phải chứa đúng một dataset_version không rỗng.")
+    document_versions = {
+        str(value).strip()
+        for value in dataframe["document_schema_version"].dropna().tolist()
+        if str(value).strip()
+    }
+    if document_versions != {settings.document_schema_version}:
+        raise ValueError(
+            "document_schema_version của dữ liệu không khớp settings: "
+            f"expected={settings.document_schema_version}, actual={sorted(document_versions)}"
+        )
+    dataset_version = next(iter(dataset_versions))
     client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key, timeout=60.0)
     dense_model = SentenceTransformer(settings.dense_model)
     dense_size = int(dense_model.get_sentence_embedding_dimension())
@@ -235,7 +263,9 @@ def process_dual_embedding(input_file: Path = INPUT_FILE) -> dict[str, Any]:
                 "popularity": safe_float(row.get("popularity", 0)),
                 "poster_path": safe_text(row.get("poster_path", "")),
                 "document_schema_version": settings.document_schema_version,
+                "dataset_version": dataset_version,
             }
+            payload["genre_keys"] = [genre.casefold() for genre in payload["genres"]]
             sparse = sparse_vectors[position]
             points.append(
                 models.PointStruct(
@@ -268,7 +298,6 @@ def process_dual_embedding(input_file: Path = INPUT_FILE) -> dict[str, Any]:
         raise RuntimeError("Không tạo được dense vector nào.")
     _validate_collection(client, collection_name, valid_point_count, dense_size, first_dense_vector)
 
-    dataset_version = settings.index_version.split("-minilm", 1)[0]
     manifest = build_manifest(
         collection_name=collection_name,
         point_count=valid_point_count,

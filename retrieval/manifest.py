@@ -103,6 +103,8 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         "sparse_model",
         "document_schema",
         "point_count",
+        "dataset_version",
+        "dataset_sha256",
     }
     missing = sorted(required.difference(manifest))
     if missing:
@@ -110,6 +112,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
 
     expected = {
         "index_version": settings.index_version,
+        "collection": settings.collection_name,
         "alias": settings.index_alias,
         "dense_model": settings.dense_model,
         "dense_dimension": settings.dense_dimension,
@@ -133,3 +136,6 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         raise RuntimeError("Index manifest có point_count không hợp lệ.") from exc
     if point_count <= 0:
         raise RuntimeError("Index manifest có point_count không hợp lệ.")
+    for field in ("dataset_version", "dataset_sha256"):
+        if not isinstance(manifest[field], str) or not manifest[field].strip():
+            raise RuntimeError(f"Index manifest có {field} không hợp lệ.")

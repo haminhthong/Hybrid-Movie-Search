@@ -1,10 +1,11 @@
 """Test FastAPI liveness, validation và search response contract."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from app.api import app, get_service
+from app.api import app
+from retrieval.config import settings
 
 client = TestClient(app)
 
@@ -43,11 +44,10 @@ def test_search_endpoint_success_mocked():
                 "display_score": 1.0,
             }
         ],
-        "index_version": "tmdb-20260907-minilm-v1",
+        "index_version": settings.index_version,
         "latency_ms": 42.5,
     }
-    app.dependency_overrides[get_service] = lambda: mock_service
-    try:
+    with patch("app.api.get_service", return_value=mock_service):
         response = client.post(
             "/search",
             json={"query": "astronauts traveling through wormhole", "top_n": 5},
@@ -56,6 +56,4 @@ def test_search_endpoint_success_mocked():
         data = response.json()
         assert data["results"][0]["title"] == "Interstellar"
         assert data["results"][0]["genres"] == ["Adventure", "Drama", "Science Fiction"]
-        assert data["index_version"] == "tmdb-20260907-minilm-v1"
-    finally:
-        app.dependency_overrides.clear()
+        assert data["index_version"] == settings.index_version

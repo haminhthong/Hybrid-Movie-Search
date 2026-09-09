@@ -45,15 +45,17 @@ def recall_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int = 10) -
 def evaluate_ranking(
     retrieved_ids: list[str],
     judgments: dict[str, int],
+    candidate_ids: list[str] | None = None,
 ) -> dict[str, float]:
-    """Tính metric hierarchy chuẩn cho một query."""
+    """Tính metric hierarchy; Recall@50 có thể dùng pool trước rerank."""
 
     relevant_ids = {movie_id for movie_id, grade in judgments.items() if grade > 0}
+    candidate_ranking = retrieved_ids if candidate_ids is None else candidate_ids
     return {
         "ndcg@10": ndcg_at_k(retrieved_ids, judgments, 10),
         "mrr@10": reciprocal_rank_at_k(retrieved_ids, relevant_ids, 10),
         "recall@10": recall_at_k(retrieved_ids, relevant_ids, 10),
-        "recall@50": recall_at_k(retrieved_ids, relevant_ids, 50),
+        "recall@50": recall_at_k(candidate_ranking, relevant_ids, 50),
         "hit@1": float(bool(retrieved_ids and str(retrieved_ids[0]) in relevant_ids)),
         "hit@5": float(bool(set(map(str, retrieved_ids[:5])) & relevant_ids)),
     }

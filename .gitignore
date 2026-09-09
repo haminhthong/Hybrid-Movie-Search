@@ -181,3 +181,4 @@ cython_debug/
 
 # Dữ liệu TMDB được tạo lại từ pipeline, không đưa bản đầy đủ lên Git.
 pipeline/data/*.csv
+data/manifests/*.json

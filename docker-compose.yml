@@ -2,17 +2,43 @@ services:
   app:
     build: .
     env_file: .env
+    environment:
+      MOVIESCOUT_API_URL: http://api:8000
     ports: ["8501:8501"]
-    depends_on: [qdrant]
+    depends_on:
+      api:
+        condition: service_healthy
   api:
     build: .
     command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ./data:/app/data
     ports: ["8000:8000"]
-    depends_on: [qdrant]
+    depends_on:
+      - qdrant
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
   qdrant:
     image: qdrant/qdrant:v1.13.2
     ports: ["6333:6333"]
     volumes: ["qdrant_data:/qdrant/storage"]
+  indexer:
+    build: .
+    command: ["python", "-m", "scripts.build_index"]
+    env_file: .env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ./pipeline/data:/app/pipeline/data
+      - ./data:/app/data
+    depends_on:
+      - qdrant
+    profiles: ["tools"]
 volumes:
   qdrant_data:

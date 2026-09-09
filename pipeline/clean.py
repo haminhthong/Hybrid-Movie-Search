@@ -10,6 +10,8 @@ import pandas as pd
 
 from retrieval.config import DOCUMENT_SCHEMA_VERSION
 
+from .manifest import update_dataset_manifest
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -18,7 +20,14 @@ OUTPUT_FILE = BASE_DIR / "data" / "movies_clean.csv"
 
 TEXT_FIELDS: tuple[str, ...] = ("title", "overview", "director", "cast", "keywords", "genres")
 LIST_FIELDS: tuple[str, ...] = ("cast", "keywords", "genres")
-REQUIRED_COLUMNS: set[str] = {"movie_id", "title", "overview", "release_date", *TEXT_FIELDS}
+REQUIRED_COLUMNS: set[str] = {
+    "movie_id",
+    "title",
+    "overview",
+    "release_date",
+    "dataset_version",
+    *TEXT_FIELDS,
+}
 DOCUMENT_FIELDS: tuple[tuple[str, str], ...] = (
     ("title", "Title"),
     ("director", "Director"),
@@ -59,7 +68,8 @@ def parse_list_value(value: Any) -> list[str]:
     if value is None or (not isinstance(value, (list, tuple)) and pd.isna(value)):
         return []
     if isinstance(value, (list, tuple)):
-        return [_clean_metadata(item) for item in value if _clean_metadata(item)]
+        values = [_clean_metadata(item) for item in value]
+        return [item for item in values if item]
 
     text = str(value).strip()
     if not text or text.lower() == "nan":
@@ -69,8 +79,10 @@ def parse_list_value(value: Any) -> list[str]:
     except json.JSONDecodeError:
         parsed = None
     if isinstance(parsed, list):
-        return [_clean_metadata(item) for item in parsed if _clean_metadata(item)]
-    return [_clean_metadata(item) for item in text.split(",") if _clean_metadata(item)]
+        values = [_clean_metadata(item) for item in parsed]
+        return [item for item in values if item]
+    values = [_clean_metadata(item) for item in text.split(",")]
+    return [item for item in values if item]
 
 
 def _document_value(field: str, value: Any) -> str:
@@ -118,6 +130,15 @@ def process_documents(
         raise ValueError(f"Dữ liệu thiếu các cột bắt buộc: {', '.join(sorted(missing))}")
 
     before_count = len(dataframe)
+    dataset_versions = {
+        str(value).strip()
+        for value in dataframe["dataset_version"].dropna().tolist()
+        if str(value).strip()
+    }
+    if len(dataset_versions) != 1:
+        raise ValueError("Canonical table phải chứa đúng một dataset_version không rỗng.")
+    dataset_version = dataset_versions.pop()
+    dataframe["dataset_version"] = dataset_version
     dataframe["movie_id"] = pd.to_numeric(dataframe["movie_id"], errors="coerce")
     dataframe = dataframe.dropna(subset=["movie_id"]).copy()
     dataframe["movie_id"] = dataframe["movie_id"].astype(int)
@@ -144,6 +165,12 @@ def process_documents(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     dataframe.to_csv(output_path, index=False, encoding="utf-8")
+    update_dataset_manifest(
+        dataset_version,
+        output_path,
+        clean_movie_count=len(dataframe),
+        document_schema_version=DOCUMENT_SCHEMA_VERSION,
+    )
     logger.info(
         "Làm sạch hoàn tất: %d/%d bản ghi hợp lệ, output=%s",
         len(dataframe),

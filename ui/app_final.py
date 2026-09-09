@@ -7,13 +7,16 @@ thanh điểm tương quan (Relevance Progress Bar) và chi tiết metadata củ
 
 import html
 import logging
+import os
 from typing import Any
 
+import requests
 import streamlit as st
 
-from retrieval.service import SearchService
-
 logger = logging.getLogger(__name__)
+API_URL = os.getenv("MOVIESCOUT_API_URL", "http://localhost:8000").rstrip("/")
+API_TIMEOUT_SECONDS = float(os.getenv("MOVIESCOUT_API_TIMEOUT", "60"))
+MAX_TOP_N = max(1, min(20, int(os.getenv("RERANK_K", "20"))))
 
 # Cấu hình trang Streamlit
 st.set_page_config(
@@ -125,10 +128,19 @@ def safe_escape(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
-@st.cache_resource(show_spinner="Đang khởi tạo các mô hình AI và kết nối Qdrant...")
-def init_engine() -> SearchService:
-    """Tải và khởi tạo đệm cho dịch vụ MovieSearch duy nhất trong một tiến trình Streamlit."""
-    return SearchService()
+def search_movies(query: str, top_n: int, genre: str, year: str) -> dict[str, Any]:
+    """Gọi FastAPI; UI không tự nạp model hoặc truy cập Qdrant trực tiếp."""
+
+    response = requests.post(
+        f"{API_URL}/search",
+        json={"query": query, "top_n": top_n, "genre": genre, "year": year},
+        timeout=API_TIMEOUT_SECONDS,
+    )
+    if response.status_code == 422:
+        detail = response.json().get("detail", "Tham số tìm kiếm không hợp lệ.")
+        raise ValueError(detail if isinstance(detail, str) else str(detail))
+    response.raise_for_status()
+    return response.json()
 
 
 def render_movie(rank: int, movie: dict[str, Any]) -> None:
@@ -232,9 +244,15 @@ with st.sidebar:
         "**MovieScout AI** truy hồi hai nhánh song song, hợp nhất bằng RRF "
         "và rerank candidate bằng Cross-Encoder. Query v1 hỗ trợ tiếng Anh."
     )
-    top_n_slider = st.slider("Số kết quả hiển thị (top_n)", min_value=1, max_value=20, value=10)
+    top_n_slider = st.slider(
+        "Số kết quả hiển thị (top_n)",
+        min_value=1,
+        max_value=MAX_TOP_N,
+        value=min(10, MAX_TOP_N),
+    )
     st.markdown("---")
     st.markdown("<b>Công nghệ sử dụng:</b>", unsafe_allow_html=True)
+    st.caption(f"• Search API: {API_URL}")
     st.caption("• Vector DB: Qdrant Cloud / Local")
     st.caption("• Dense Model: sentence-transformers/all-MiniLM-L6-v2")
     st.caption("• Sparse Model: FastEmbed Qdrant/bm25")
@@ -265,9 +283,8 @@ if submit_button:
         st.stop()
 
     try:
-        engine = init_engine()
         with st.spinner("🚀 Đang truy hồi vector và tính toán độ tương quan ngữ nghĩa..."):
-            response = engine.search(
+            response = search_movies(
                 query=query_input,
                 top_n=top_n_slider,
                 genre=genre_selected,
@@ -294,6 +311,17 @@ if submit_button:
 
     except ValueError as exc:
         st.warning(f"⚠️ Tham số không hợp lệ: {exc}")
+    except requests.Timeout:
+        st.error("❌ Search API phản hồi quá thời gian. Vui lòng thử lại.")
+    except requests.HTTPError:
+        logger.exception("Search API trả về lỗi HTTP tại %s", API_URL)
+        st.error("❌ Search API chưa sẵn sàng. Hãy kiểm tra /ready và index Qdrant.")
+    except requests.RequestException:
+        logger.exception("Không thể gọi Search API tại %s", API_URL)
+        st.error(
+            "❌ Không kết nối được Search API. "
+            "Hãy khởi động FastAPI và kiểm tra MOVIESCOUT_API_URL."
+        )
     except Exception:
         logger.exception("Tìm kiếm gặp sự cố hệ thống")
         st.error(

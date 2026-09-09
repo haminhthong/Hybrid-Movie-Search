@@ -32,7 +32,14 @@ class SearchService:
     ) -> dict[str, Any]:
         """Đọc/ghi cache bằng query đã chuẩn hóa và version index hiện tại."""
 
-        key = (settings.index_version, normalized_query, top_n, genre, year, debug)
+        key = (
+            settings.index_version,
+            normalized_query,
+            top_n,
+            genre.casefold(),
+            year.casefold(),
+            debug,
+        )
         with self._cache_lock:
             cached = self.cache.get(key)
             if cached is not None:

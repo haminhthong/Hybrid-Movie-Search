@@ -64,7 +64,9 @@ def validate_index_contract(client: Any | None = None) -> dict[str, Any]:
             f"expected={manifest['point_count']}, actual={count}."
         )
     dense_size = _collection_dense_size(collection_info)
-    if dense_size is not None and dense_size != settings.dense_dimension:
+    if dense_size is None:
+        raise RuntimeError("Không đọc được dense dimension của collection Qdrant.")
+    if dense_size != settings.dense_dimension:
         raise RuntimeError(
             "Dense dimension của index không khớp model: "
             f"expected={settings.dense_dimension}, actual={dense_size}."
@@ -74,10 +76,19 @@ def validate_index_contract(client: Any | None = None) -> dict[str, Any]:
     return manifest
 
 
+@lru_cache(maxsize=1)
+def ensure_index_contract() -> dict[str, Any]:
+    """Validate contract một lần cho process để không count exact ở mỗi query."""
+
+    return validate_index_contract()
+
+
 def check_readiness() -> dict[str, Any]:
     """Trả thông tin readiness khi toàn bộ model/index contract hợp lệ."""
 
-    manifest = validate_index_contract()
+    # Readiness chủ động kiểm tra lại để phát hiện alias đổi sau khi process chạy.
+    ensure_index_contract.cache_clear()
+    manifest = ensure_index_contract()
     return {
         "status": "ready",
         "index_version": manifest["index_version"],
@@ -99,7 +110,7 @@ def _query(
     if limit <= 0:
         return []
     if check_contract:
-        validate_index_contract()
+        ensure_index_contract()
     response = get_client().query_points(
         collection_name=settings.index_alias,
         using=vector_name,
@@ -171,7 +182,7 @@ def hybrid_search(
         return [], []
 
     # Verify một lần trước khi fan-out để không nhân đôi request readiness.
-    validate_index_contract()
+    ensure_index_contract()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {

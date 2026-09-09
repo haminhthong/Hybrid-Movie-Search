@@ -198,10 +198,13 @@ def fetch_tmdb_movies_by_year(
         logger.warning("TMDB API không trả về phim nào trong khoảng thời gian cấu hình.")
         return dataframe
 
-    # Khử trùng lặp và làm sạch tối thiểu
+    # Khử trùng lặp và làm sạch tối thiểu.
     dataframe["overview"] = dataframe["overview"].fillna("").astype(str)
     dataframe = dataframe[dataframe["overview"].str.strip().str.len() > 0]
     dataframe = dataframe.drop_duplicates(subset=["movie_id"], keep="first")
+
+    dataset_version = f"tmdb-{pd.Timestamp.utcnow().strftime('%Y%m%d')}"
+    dataframe["dataset_version"] = dataset_version
 
     output_file = Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -213,7 +216,11 @@ def fetch_tmdb_movies_by_year(
         dataset_version=dataset_version,
         start_year=start_year,
         end_year=end_year,
-        filters={"overview_required": True},
+        filters={
+            "overview_required": True,
+            "sort_by": "popularity.desc",
+            "max_pages_per_year": max_pages_per_year,
+        },
         movie_count=len(dataframe),
     )
 

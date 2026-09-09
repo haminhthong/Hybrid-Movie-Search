@@ -31,29 +31,39 @@ def parse_year(value: str) -> tuple[int, int]:
 
 
 def build_filter(genre: str = "", year: str = "") -> Any | None:
-    """Tạo Qdrant filter với genre categorical exact-match và year range."""
+    """Tạo filter genre exact-match không phân biệt hoa thường và year range."""
+
+    normalized_genre = genre.strip()
+    normalized_year = year.strip()
+    filter_values: list[tuple[str, Any]] = []
+    if normalized_genre and normalized_genre.casefold() != "all":
+        filter_values.append(("genre", normalized_genre.casefold()))
+
+    if normalized_year:
+        filter_values.append(("year", parse_year(normalized_year)))
+    if not filter_values:
+        return None
 
     from qdrant_client import models
 
     conditions: list[Any] = []
-    normalized_genre = genre.strip()
-    if normalized_genre and normalized_genre.casefold() != "all":
-        # genres trong payload là mảng keyword; MatchValue kiểm tra phần tử chính xác.
-        conditions.append(
-            models.FieldCondition(
-                key="genres",
-                match=models.MatchValue(value=normalized_genre),
+    for field, value in filter_values:
+        if field == "genre":
+            # genres trong payload là mảng keyword; MatchValue kiểm tra phần tử chính xác.
+            conditions.append(
+                models.FieldCondition(
+                    key="genre_keys",
+                    match=models.MatchValue(value=value),
+                )
             )
-        )
-
-    if year.strip():
-        start, end = parse_year(year)
-        conditions.append(
-            models.FieldCondition(
-                key="release_year",
-                range=models.Range(gte=start, lte=end),
+        else:
+            start, end = value
+            conditions.append(
+                models.FieldCondition(
+                    key="release_year",
+                    range=models.Range(gte=start, lte=end),
+                )
             )
-        )
 
     return models.Filter(must=conditions) if conditions else None
 

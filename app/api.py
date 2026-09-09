@@ -1,14 +1,17 @@
 """FastAPI cho production hybrid movie retrieval."""
 
+import logging
 from functools import lru_cache
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from retrieval.config import settings
 from retrieval.service import SearchService
 from retrieval.store import check_readiness
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="MovieScout Hybrid Retrieval API",
@@ -111,6 +114,12 @@ def ready() -> ReadyResponse:
         return ReadyResponse(**check_readiness())
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Readiness check gặp lỗi không xác định")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Dịch vụ tìm kiếm gặp lỗi nội bộ.",
+        ) from exc
 
 
 @app.post(
@@ -120,15 +129,15 @@ def ready() -> ReadyResponse:
     responses={
         422: {"description": "Tham số truy vấn không hợp lệ"},
         503: {"description": "Qdrant hoặc index contract chưa sẵn sàng"},
+        500: {"description": "Lỗi nội bộ không tiết lộ stack trace"},
     },
 )
-def search(
-    request: SearchRequest,
-    service: Annotated[SearchService, Depends(get_service)],
-) -> SearchResponse:
+def search(request: SearchRequest) -> SearchResponse:
     """Chạy Dense/BM25 song song, RRF, Cross-Encoder rồi trả top-N."""
 
     try:
+        # Lấy service sau khi Pydantic đã validate request để lỗi 422 không tải model nặng.
+        service = get_service()
         return SearchResponse(
             **service.search(
                 query=request.query,
@@ -142,3 +151,9 @@ def search(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Search request gặp lỗi không xác định")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Dịch vụ tìm kiếm gặp lỗi nội bộ.",
+        ) from exc

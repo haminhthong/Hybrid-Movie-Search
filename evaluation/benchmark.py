@@ -17,7 +17,7 @@ from retrieval.config import settings
 from retrieval.query import QueryEncoder
 from retrieval.ranking import reciprocal_rank_fusion, to_movies
 from retrieval.rerank import CrossEncoderReranker
-from retrieval.store import dense_search, hybrid_search, sparse_search
+from retrieval.store import hybrid_search
 
 from .errors import rerank_gain_harm
 from .judgments import QueryJudgment, load_judgments
@@ -36,7 +36,7 @@ def _ids(movies: list[dict[str, Any]]) -> list[str]:
 
 
 class AblationRunner:
-    """Chạy bốn pipeline có cùng query encoder và candidate budget."""
+    """Chạy bốn pipeline trên cùng một lần encode và retrieval."""
 
     def __init__(self) -> None:
         self.encoder = QueryEncoder()
@@ -48,28 +48,39 @@ class AblationRunner:
         return self.reranker
 
     def retrieve(self, judgment: QueryJudgment, pipeline: str) -> list[dict[str, Any]]:
-        """Trả ranking của một pipeline B0-B3."""
+        """Trả ranking của một pipeline B0-B3 (API tương thích cũ)."""
+
+        rankings = self.retrieve_all(judgment)["rankings"]
+        if pipeline not in rankings:
+            raise ValueError(f"Pipeline không hợp lệ: {pipeline}")
+        return rankings[pipeline]
+
+    def retrieve_all(self, judgment: QueryJudgment) -> dict[str, Any]:
+        """Tái sử dụng vector và hai branch để benchmark không truy vấn lặp."""
 
         query, dense_vector, sparse_vector = self.encoder.encode(judgment.query)
-        if pipeline == "B0_BM25":
-            return to_movies(sparse_search(sparse_vector, limit=settings.retrieval_k))
-        if pipeline == "B1_DENSE":
-            return to_movies(dense_search(dense_vector, limit=settings.retrieval_k))
-
         dense, sparse = hybrid_search(dense_vector, sparse_vector, limit=settings.retrieval_k)
-        fused = to_movies(
+        bm25 = to_movies(sparse)
+        dense_movies = to_movies(dense)
+        fused_all = to_movies(
             reciprocal_rank_fusion(
                 dense,
                 sparse,
-                limit=settings.candidate_k,
+                limit=settings.retrieval_k,
                 rrf_k=settings.rrf_k,
             )
         )
-        if pipeline == "B2_HYBRID_RRF":
-            return fused
-        if pipeline == "B3_HYBRID_CE":
-            return self._get_reranker().rerank(query, fused[: settings.rerank_k])
-        raise ValueError(f"Pipeline không hợp lệ: {pipeline}")
+        fused_candidates = fused_all[: settings.candidate_k]
+        reranked = self._get_reranker().rerank(query, fused_candidates[: settings.rerank_k])
+        return {
+            "rankings": {
+                "B0_BM25": bm25,
+                "B1_DENSE": dense_movies,
+                "B2_HYBRID_RRF": fused_candidates,
+                "B3_HYBRID_CE": reranked,
+            },
+            "candidate_ids": _ids(fused_all),
+        }
 
 
 def evaluate_split(
@@ -90,17 +101,20 @@ def evaluate_split(
     rerank_rows: list[dict[str, Any]] = []
     started = time.perf_counter()
     for judgment in judgments:
-        rankings: dict[str, list[dict[str, Any]]] = {}
+        query_started = time.perf_counter()
+        retrieval = runner.retrieve_all(judgment)
+        rankings: dict[str, list[dict[str, Any]]] = retrieval["rankings"]
+        candidate_ids = retrieval["candidate_ids"]
+        query_latency_ms = round((time.perf_counter() - query_started) * 1000, 2)
         for pipeline in pipelines:
-            query_started = time.perf_counter()
-            movies = runner.retrieve(judgment, pipeline)
-            rankings[pipeline] = movies
-            metrics = evaluate_ranking(_ids(movies), judgment.judgments)
+            movies = rankings[pipeline]
+            pool_ids = candidate_ids if pipeline in {"B2_HYBRID_RRF", "B3_HYBRID_CE"} else _ids(movies)
+            metrics = evaluate_ranking(_ids(movies), judgment.judgments, candidate_ids=pool_ids)
             row = {
                 "query_id": judgment.query_id,
                 "query_type": judgment.query_type,
                 "pipeline": pipeline,
-                "latency_ms": round((time.perf_counter() - query_started) * 1000, 2),
+                "latency_ms": query_latency_ms,
                 **metrics,
             }
             rows.append(row)

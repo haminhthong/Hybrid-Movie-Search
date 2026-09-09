@@ -9,7 +9,7 @@ from retrieval.store import hybrid_search
 
 @patch("retrieval.store.sparse_search")
 @patch("retrieval.store.dense_search")
-@patch("retrieval.store.validate_index_contract")
+@patch("retrieval.store.ensure_index_contract")
 def test_hybrid_search_survives_one_failed_branch(mock_validate, mock_dense, mock_sparse):
     mock_dense.side_effect = RuntimeError("dense down")
     mock_sparse.return_value = [{"id": "s1"}]
@@ -22,7 +22,7 @@ def test_hybrid_search_survives_one_failed_branch(mock_validate, mock_dense, moc
 
 @patch("retrieval.store.sparse_search")
 @patch("retrieval.store.dense_search")
-@patch("retrieval.store.validate_index_contract")
+@patch("retrieval.store.ensure_index_contract")
 def test_hybrid_search_fails_when_both_branches_are_down(mock_validate, mock_dense, mock_sparse):
     mock_dense.side_effect = RuntimeError("dense down")
     mock_sparse.side_effect = RuntimeError("sparse down")

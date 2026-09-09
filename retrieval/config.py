@@ -19,7 +19,8 @@ INDEX_ALIAS: str = os.getenv("QDRANT_INDEX_ALIAS", "movies_current").strip() or 
 DENSE_MODEL: str = os.getenv("DENSE_MODEL", "all-MiniLM-L6-v2").strip()
 SPARSE_MODEL: str = os.getenv("SPARSE_MODEL", "Qdrant/bm25").strip()
 RERANK_MODEL: str = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2").strip()
-DOCUMENT_SCHEMA_VERSION: str = "movie-doc-v1"
+# Tăng version khi thay đổi field, thứ tự field hoặc quy tắc chuẩn hóa document.
+DOCUMENT_SCHEMA_VERSION: str = "movie-doc-v2"
 
 
 def _safe_version(value: str) -> str:
@@ -36,7 +37,8 @@ class Settings:
     qdrant_url: str = os.getenv("QDRANT_URL", "").strip()
     qdrant_api_key: str | None = os.getenv("QDRANT_API_KEY") or None
     index_alias: str = INDEX_ALIAS
-    index_version: str = _safe_version(os.getenv("INDEX_VERSION", "tmdb-20260907-minilm-v1"))
+    # Không gắn ngày hiện tại vào default để clone mới không giả danh một artifact cũ.
+    index_version: str = _safe_version(os.getenv("INDEX_VERSION", "tmdb-local-minilm-v2"))
     dense_model: str = DENSE_MODEL
     sparse_model: str = SPARSE_MODEL
     rerank_model: str = RERANK_MODEL
