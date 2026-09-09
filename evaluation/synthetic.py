@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from .query import QueryEncoder
-from .ranking import to_movies
-from .store import dense_search, sparse_search
+from retrieval.query import QueryEncoder
+from retrieval.ranking import to_movies
+from retrieval.store import dense_search, sparse_search
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EVAL_FILE = PROJECT_ROOT / "evaluation" / "eval_queries_200.csv"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "evaluation"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "evaluation" / "reports" / "synthetic"
 METRIC_NAMES = ("hit@1", "hit@3", "hit@5", "hit@10", "mrr@10")
 REQUIRED_COLUMNS = {"query_id", "query", "query_type", "expected_movie_id", "expected_title"}
 

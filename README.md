@@ -187,13 +187,13 @@ lại collection.
 │   ├── ranking.py                     RRF + structured payload + display score
 │   ├── rerank.py                      Cross-Encoder reranking
 │   ├── search.py                      Orchestrator online duy nhất
-│   ├── service.py                     LRU cache + latency
-│   └── evaluate_simple.py             Legacy synthetic regression
+│   └── service.py                     LRU cache + latency
 ├── evaluation/
 │   ├── README.md                      Evaluation contract
 │   ├── dev_queries.jsonl              Dev judgments để tune
 │   ├── locked_test_queries.jsonl      Locked judgments sau freeze
 │   ├── eval_queries_200.csv           Synthetic regression legacy
+│   ├── synthetic.py                   CLI kiểm tra synthetic BM25/Dense
 │   ├── judgments.py                   JSONL loader
 │   ├── metrics.py                     nDCG, MRR, Recall, Hit
 │   ├── errors.py                      Failure stage + gain/harm
@@ -201,7 +201,8 @@ lại collection.
 ├── experiments/adaptive_search/      HyDE/router ngoài production path
 ├── scripts/                           Build, validate, evaluate CLIs
 ├── tests/                             Unit, API, ranking, manifest, service
-├── ui/app_final.py                    Streamlit client gọi FastAPI
+├── ui/app.py                          Streamlit client gọi FastAPI
+├── reports/                          Báo cáo Word tham khảo lịch sử
 ├── .github/workflows/ci.yml           Ruff + pytest trên push/PR
 ├── Dockerfile                         Image API/UI/indexer
 ├── docker-compose.yml                 API, UI, Qdrant, profile indexer
@@ -263,7 +264,7 @@ Chạy API và UI ở hai terminal sau khi index release:
 
 ```powershell
 uvicorn app.api:app --reload --port 8000
-streamlit run ui/app_final.py
+streamlit run ui/app.py
 ```
 
 UI chỉ gọi `MOVIESCOUT_API_URL/search`; API là nơi duy nhất giữ encoder,
@@ -325,6 +326,9 @@ python -m scripts.evaluate_dev
 python -m scripts.evaluate_final
 ```
 
+Chạy synthetic riêng bằng `python -m evaluation.synthetic`; output nằm ở
+`evaluation/reports/synthetic/`. Module này thay cho `retrieval.evaluate_simple`.
+
 B0–B3 là BM25, Dense, Hybrid RRF, Hybrid RRF + Cross-Encoder. Metric chính là
 `nDCG@10`; known-item dùng thêm `MRR@10`, `Hit@1/5`; candidate generation dùng
 `Recall@50`; báo cáo thêm `p50/p95` và `rerank_gain_harm.csv`. Benchmark dùng
@@ -349,10 +353,11 @@ Quality gate local:
 
 ```powershell
 ruff check .
+python -m compileall -q app evaluation experiments pipeline retrieval scripts tests ui
 python -m pytest tests -q
 ```
 
-GitHub Actions chạy Ruff và pytest trên mọi push/pull request. CI không gọi TMDB,
+GitHub Actions chạy Ruff, compileall và pytest trên mọi push/pull request. CI không gọi TMDB,
 không tải model nặng, không cần Qdrant thật nên kết quả lặp lại ổn định; build
 index và benchmark đầy đủ được chạy riêng khi có service/artifact.
 
@@ -370,6 +375,8 @@ Các invariant phải giữ:
 Các tài liệu Markdown legacy/trùng lặp đã được loại khỏi repo; `README.md` và
 `evaluation/README.md` là hai tài liệu Markdown chính. HyDE/router vẫn được giữ
 ở `experiments/` để truy vết nhưng không được import bởi production search.
+Kết quả mới ghi vào `evaluation/reports/` và được gitignore; script tạo báo cáo
+một lần đã được xóa. `reports/` giữ báo cáo Word lịch sử để tham khảo.
 
 ## Hạn chế và hướng mở rộng có kiểm soát
 

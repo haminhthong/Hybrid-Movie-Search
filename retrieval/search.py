@@ -158,8 +158,10 @@ class MovieSearch:
         if not 0 < top_n <= settings.rerank_k:
             raise ValueError(f"top_n phải nằm trong khoảng 1-{settings.rerank_k}.")
 
+        # Kiểm tra filter trước khi chạy bước mã hóa tốn tài nguyên.
+        query_filter = build_filter(genre, year)
         clean_query, dense_vector, sparse_vector = self.encoder.encode(query)
-        candidates = self._candidates(dense_vector, sparse_vector, build_filter(genre, year))
+        candidates = self._candidates(dense_vector, sparse_vector, query_filter)
         if not candidates:
             return {"query": clean_query, "results": [], "index_version": settings.index_version}
 

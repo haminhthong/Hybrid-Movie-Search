@@ -47,7 +47,7 @@ st.markdown(
         -webkit-text-fill-color: transparent;
         margin-bottom: 0.2rem;
     }
-    
+
     .sub-title {
         text-align: center;
         color: #94a3b8;

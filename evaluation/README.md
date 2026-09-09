@@ -5,6 +5,9 @@ lượng retrieval. `eval_queries_200.csv` là **synthetic regression**: giữ l
 bắt regression, kiểm tra entity/metadata và sanity check, không dùng làm
 headline benchmark.
 
+Chạy synthetic bằng `python -m evaluation.synthetic`; kết quả được ghi vào
+`evaluation/reports/synthetic/`. Benchmark chính dùng các CLI trong `scripts/`.
+
 `dev_queries.jsonl` là tập phát triển dùng để chọn `retrieval_k`, `candidate_k`,
 `rerank_k`, document schema và filter. `locked_test_queries.jsonl` chỉ chạy sau
 khi cấu hình đã freeze; command final không nhận tham số tuning.

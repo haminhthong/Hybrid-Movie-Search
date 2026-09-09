@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from retrieval.query import QueryEncoder
 from retrieval.search import MovieSearch, build_filter
 
@@ -23,6 +25,14 @@ def test_build_filter_year_only():
 def test_build_filter_empty():
     assert build_filter(genre="All", year="") is None
     assert build_filter(genre="", year="") is None
+
+
+def test_invalid_year_does_not_encode_query():
+    encoder = MagicMock()
+    search = MovieSearch(encoder=encoder)
+    with pytest.raises(ValueError, match="Năm bắt đầu"):
+        search.search("space", year="2020-2010")
+    encoder.encode.assert_not_called()
 
 
 def test_query_normalization_is_lightweight_and_deterministic():

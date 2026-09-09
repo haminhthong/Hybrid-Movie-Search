@@ -10,4 +10,4 @@ COPY scripts scripts
 RUN pip install --no-cache-dir .
 COPY . .
 EXPOSE 8000 8501
-CMD ["streamlit", "run", "ui/app_final.py", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "ui/app.py", "--server.address=0.0.0.0"]
