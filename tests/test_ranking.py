@@ -1,6 +1,6 @@
-"""Test RRF, structured payload và display score."""
+"""Test RRF fusion, structured payload parsing và movie ranking."""
 
-from retrieval.ranking import add_display_scores, reciprocal_rank_fusion, to_movies
+from retrieval.ranking import rank_movies, reciprocal_rank_fusion, to_movies
 
 
 def test_reciprocal_rank_fusion_is_deterministic():
@@ -41,14 +41,12 @@ def test_to_movies_keeps_structured_metadata():
     assert movies[0]["cast"] == ["Leonardo DiCaprio"]
 
 
-def test_display_score_is_not_named_final_score():
+def test_rank_movies_orders_by_score_and_assigns_rank():
     movies = [
         {"movie_id": 1, "rerank_score": 10.0},
-        {"movie_id": 2, "rerank_score": 5.0},
-        {"movie_id": 3, "rerank_score": 0.0},
+        {"movie_id": 2, "rerank_score": 15.0},
+        {"movie_id": 3, "rerank_score": 5.0},
     ]
-    results = add_display_scores(movies, top_n=3)
+    results = rank_movies(movies, top_n=3)
+    assert [movie["movie_id"] for movie in results] == [2, 1, 3]
     assert [movie["rank"] for movie in results] == [1, 2, 3]
-    assert results[0]["display_score"] == 1.0
-    assert results[1]["display_score"] == 0.5
-    assert "final_score" not in results[0]

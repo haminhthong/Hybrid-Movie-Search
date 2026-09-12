@@ -1,8 +1,7 @@
-"""Giao diện web tương tác (Streamlit Application) của MovieScout AI.
+"""Giao diện web trực quan (Streamlit Application) của MovieScout AI.
 
-Cung cấp trải nghiệm tìm kiếm phim hiện đại với phong cách thiết kế Dark Glassmorphism,
-hiển thị trực quan điểm tương quan tương đối, độ trễ phản hồi (Latency),
-thanh điểm tương quan (Relevance Progress Bar) và chi tiết metadata của bộ phim.
+Cung cấp trải nghiệm tìm kiếm phim hiện đại với phong cách Dark Glassmorphism,
+hiển thị poster, thông tin đạo diễn, diễn viên, cốt truyện và phân tích ranking.
 """
 
 import html
@@ -20,7 +19,7 @@ MAX_TOP_N = max(1, min(20, int(os.getenv("RERANK_K", "20"))))
 
 # Cấu hình trang Streamlit
 st.set_page_config(
-    page_title="MovieScout AI — Hybrid Semantic Search Engine",
+    page_title="MovieScout AI — Hybrid Semantic Movie Search",
     page_icon="🎬",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -30,14 +29,11 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Nền chính ứng dụng */
     .stApp {
         background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
         color: #f8fafc;
         font-family: 'Inter', system-ui, -apple-system, sans-serif;
     }
-
-    /* Tiêu đề ứng dụng */
     .main-title {
         font-size: 2.75rem;
         font-weight: 800;
@@ -47,15 +43,12 @@ st.markdown(
         -webkit-text-fill-color: transparent;
         margin-bottom: 0.2rem;
     }
-
     .sub-title {
         text-align: center;
         color: #94a3b8;
         font-size: 1.1rem;
         margin-bottom: 2rem;
     }
-
-    /* Thẻ hiển thị bộ phim (Glassmorphism Card) */
     .movie-card {
         background: rgba(30, 41, 59, 0.7);
         backdrop-filter: blur(12px);
@@ -66,56 +59,35 @@ st.markdown(
         margin-bottom: 16px;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
-
     .movie-card:hover {
         transform: translateY(-2px);
         box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.25);
         border-color: rgba(129, 140, 248, 0.3);
     }
-
     .movie-title {
         font-size: 1.35rem;
         font-weight: 700;
         color: #f1f5f9;
         margin-bottom: 8px;
     }
-
-    .badge-score {
+    .badge-tag {
         background: rgba(56, 189, 248, 0.15);
         color: #38bdf8;
         border: 1px solid rgba(56, 189, 248, 0.3);
-        padding: 4px 10px;
-        border-radius: 8px;
-        font-size: 0.85rem;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 0.82rem;
         font-weight: 600;
+        margin-right: 6px;
     }
-
     .meta-text {
         color: #94a3b8;
         font-size: 0.92rem;
         line-height: 1.6;
     }
-
     .meta-highlight {
         color: #e2e8f0;
         font-weight: 600;
-    }
-
-    /* Thanh điểm tương quan Progress Bar custom */
-    .score-bar-bg {
-        background: rgba(255, 255, 255, 0.08);
-        border-radius: 10px;
-        height: 8px;
-        width: 100%;
-        margin-top: 8px;
-        margin-bottom: 12px;
-        overflow: hidden;
-    }
-
-    .score-bar-fill {
-        background: linear-gradient(90deg, #38bdf8, #818cf8);
-        height: 100%;
-        border-radius: 10px;
     }
     </style>
     """,
@@ -124,16 +96,15 @@ st.markdown(
 
 
 def safe_escape(value: Any) -> str:
-    """Mã hóa chuỗi an toàn trước khi chèn vào HTML để tránh lỗi XSS injection."""
+    """Mã hóa chuỗi an toàn trước khi chèn vào HTML."""
     return html.escape(str(value), quote=True)
 
 
-def search_movies(query: str, top_n: int, genre: str, year: str) -> dict[str, Any]:
-    """Gọi FastAPI; UI không tự nạp model hoặc truy cập Qdrant trực tiếp."""
-
+def search_movies(query: str, top_n: int, genre: str, year: str, debug: bool = False) -> dict[str, Any]:
+    """Gọi FastAPI endpoint /search."""
     response = requests.post(
         f"{API_URL}/search",
-        json={"query": query, "top_n": top_n, "genre": genre, "year": year},
+        json={"query": query, "top_n": top_n, "genre": genre, "year": year, "debug": debug},
         timeout=API_TIMEOUT_SECONDS,
     )
     if response.status_code == 422:
@@ -143,21 +114,17 @@ def search_movies(query: str, top_n: int, genre: str, year: str) -> dict[str, An
     return response.json()
 
 
-def render_movie(rank: int, movie: dict[str, Any]) -> None:
-    """Hiển thị một thẻ thông tin kết quả phim sang trọng."""
+def render_movie(rank: int, movie: dict[str, Any], show_debug: bool = False) -> None:
+    """Hiển thị thẻ thông tin kết quả phim."""
     director = movie.get("director") or "Chưa rõ"
     cast = ", ".join(movie.get("cast", [])) or "Chưa rõ"
     plot = movie.get("overview") or "Chưa có tóm tắt"
     year = movie.get("release_year") or str(movie.get("release_date", ""))[:4] or "N/A"
-    display_score = float(movie.get("display_score", 0.0))
-    rerank_score = float(movie.get("rerank_score", 0.0))
-    score_pct = int(max(0.0, min(display_score, 1.0)) * 100)
     title = movie.get("title", "Không rõ tên")
     vote_avg = movie.get("vote_average", 0)
     poster_path = movie.get("poster_path", "")
     genres = ", ".join(movie.get("genres", []))
 
-    # Tạo cột hiển thị ảnh poster (nếu có) và thông tin chi tiết
     col_poster, col_info = st.columns([1, 4]) if poster_path else (None, None)
 
     card_html = f"""
@@ -168,20 +135,13 @@ def render_movie(rank: int, movie: dict[str, Any]) -> None:
                 ({safe_escape(year)})
             </span>
         </div>
-        <div style="margin-bottom: 10px;">
-            <span class="badge-score">Display relevance: {display_score:.4f}</span>
-            <span style="color: #cbd5e1; font-size: 0.88rem; margin-left: 12px;">
-                CE: {rerank_score:.4f}
+        <div style="margin-bottom: 12px;">
+            <span style="color: #cbd5e1; font-size: 0.88rem; margin-right: 14px;">
+                ⭐ TMDB: <b style="color: #facc15;">{safe_escape(vote_avg)}/10</b>
             </span>
-            <span style="color: #cbd5e1; font-size: 0.88rem; margin-left: 12px;">
-                ⭐ TMDB Rating: <b style="color: #facc15;">{safe_escape(vote_avg)}/10</b>
-            </span>
-            <span style="color: #94a3b8; font-size: 0.88rem; margin-left: 12px;">
+            <span style="color: #94a3b8; font-size: 0.88rem;">
                 🎭 {safe_escape(genres)}
             </span>
-        </div>
-        <div class="score-bar-bg">
-            <div class="score-bar-fill" style="width: {score_pct}%;"></div>
         </div>
         <div class="meta-text">
             <p style="margin-bottom: 6px;">
@@ -203,18 +163,35 @@ def render_movie(rank: int, movie: dict[str, Any]) -> None:
             st.image(poster_url, use_container_width=True)
         with col_info:
             st.markdown(card_html, unsafe_allow_html=True)
+            if show_debug and "evidence" in movie and movie["evidence"]:
+                ev = movie["evidence"]
+                with st.expander("🔍 Chi tiết xếp hạng (Retrieval Evidence)"):
+                    st.caption(
+                        f"• **Dense Rank:** {ev.get('dense_rank', 'N/A')} | "
+                        f"• **BM25 Rank:** {ev.get('sparse_rank', 'N/A')} | "
+                        f"• **RRF Rank:** {ev.get('rrf_rank', 'N/A')} (Score: {ev.get('rrf_score', 0):.4f}) | "
+                        f"• **Cross-Encoder Score:** {movie.get('rerank_score', 'N/A')}"
+                    )
     else:
         st.markdown(card_html, unsafe_allow_html=True)
+        if show_debug and "evidence" in movie and movie["evidence"]:
+            ev = movie["evidence"]
+            with st.expander("🔍 Chi tiết xếp hạng (Retrieval Evidence)"):
+                st.caption(
+                    f"• **Dense Rank:** {ev.get('dense_rank', 'N/A')} | "
+                    f"• **BM25 Rank:** {ev.get('sparse_rank', 'N/A')} | "
+                    f"• **RRF Rank:** {ev.get('rrf_rank', 'N/A')} (Score: {ev.get('rrf_score', 0):.4f}) | "
+                    f"• **Cross-Encoder Score:** {movie.get('rerank_score', 'N/A')}"
+                )
 
 
 # Header ứng dụng
 st.markdown("<div class='main-title'>🎬 MovieScout AI</div>", unsafe_allow_html=True)
 st.markdown(
-    "<div class='sub-title'>BM25 + Dense Retrieval → RRF → Cross-Encoder Reranking</div>",
+    "<div class='sub-title'>Hybrid Movie Search: Dense (MiniLM) + BM25 → RRF → Cross-Encoder Reranking</div>",
     unsafe_allow_html=True,
 )
 
-# Thư viện thể loại phim
 genres_list = [
     "All",
     "Action",
@@ -237,12 +214,12 @@ genres_list = [
     "Western",
 ]
 
-# Sidebar thông tin dự án
+# Sidebar
 with st.sidebar:
-    st.header("⚙️ Cấu Hình & Thông Tin")
+    st.header("⚙️ Cấu Hình")
     st.info(
-        "**MovieScout AI** truy hồi hai nhánh song song, hợp nhất bằng RRF "
-        "và rerank candidate bằng Cross-Encoder. Query v1 hỗ trợ tiếng Anh."
+        "**MovieScout AI** kết hợp ngữ nghĩa (Dense MiniLM) và từ khóa chính xác (BM25), "
+        "hợp nhất bằng Reciprocal Rank Fusion và rerank bằng Cross-Encoder."
     )
     top_n_slider = st.slider(
         "Số kết quả hiển thị (top_n)",
@@ -250,13 +227,14 @@ with st.sidebar:
         max_value=MAX_TOP_N,
         value=min(10, MAX_TOP_N),
     )
+    debug_mode = st.checkbox("Hiển thị chi tiết ranking (Debug mode)", value=False)
     st.markdown("---")
-    st.markdown("<b>Công nghệ sử dụng:</b>", unsafe_allow_html=True)
-    st.caption(f"• Search API: {API_URL}")
-    st.caption("• Vector DB: Qdrant Cloud / Local")
-    st.caption("• Dense Model: sentence-transformers/all-MiniLM-L6-v2")
-    st.caption("• Sparse Model: FastEmbed Qdrant/bm25")
-    st.caption("• Reranker: ms-marco-MiniLM-L-6-v2")
+    st.markdown("<b>Pipeline Kiến Trúc:</b>", unsafe_allow_html=True)
+    st.caption("1. Dense Retrieval: all-MiniLM-L6-v2")
+    st.caption("2. Lexical Retrieval: FastEmbed BM25")
+    st.caption("3. Fusion: Reciprocal Rank Fusion (RRF)")
+    st.caption("4. Two-Stage Reranker: ms-marco-MiniLM-L-6-v2")
+    st.caption("5. Vector Store: Qdrant")
 
 # Form tìm kiếm
 with st.form("search_form"):
@@ -264,67 +242,48 @@ with st.form("search_form"):
     genre_selected = col_genre.selectbox("Thể loại phim", genres_list)
     year_input = col_year.text_input(
         "Năm sản xuất",
-        placeholder="Ví dụ: 2014 hoặc 2000-2020",
+        placeholder="Ví dụ: 2014 hoặc 2010-2020",
     )
 
     query_input = st.text_input(
-        "Mô tả nội dung cốt truyện bộ phim cần tìm",
-        placeholder=(
-            "Mô tả ý tưởng, ví dụ: 'A team of explorers travels through a wormhole "
-            "in space to save humanity...'"
-        ),
+        "Mô tả nội dung, ý tưởng hoặc cốt truyện phim",
+        placeholder="Ví dụ: 'A team of explorers travels through a wormhole in space to save humanity...'",
     )
     submit_button = st.form_submit_button("🔍 Tìm Kiếm Phim", use_container_width=True)
 
-# Xử lý sự kiện Submit
 if submit_button:
     if not query_input.strip():
-        st.warning("⚠️ Vui lòng nhập mô tả cốt truyện phim trước khi bấm Tìm Kiếm.")
+        st.warning("⚠️ Vui lòng nhập mô tả cốt truyện phim trước khi tìm kiếm.")
         st.stop()
 
     try:
-        with st.spinner("🚀 Đang truy hồi vector và tính toán độ tương quan ngữ nghĩa..."):
+        with st.spinner("🚀 Đang truy hồi hybrid (Dense + BM25) và Cross-Encoder reranking..."):
             response = search_movies(
                 query=query_input,
                 top_n=top_n_slider,
                 genre=genre_selected,
                 year=year_input,
+                debug=debug_mode,
             )
 
-        movies = response["results"]
-        latency = response["latency_ms"]
+        movies = response.get("results", [])
+        latency = response.get("latency_ms", 0.0)
 
         if not movies:
             st.info("💡 Không tìm thấy bộ phim nào phù hợp với điều kiện lọc và mô tả của bạn.")
         else:
-            # Hiển thị các Metrics
-            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1, m_col2 = st.columns(2)
             m_col1.metric("Số kết quả tìm thấy", f"{len(movies)} phim")
-            m_col2.metric("Thời gian phản hồi", f"{latency:.2f} ms")
-            m_col3.metric("Index version", response["index_version"])
+            m_col2.metric("Thời gian xử lý", f"{latency:.2f} ms")
 
-            st.write("")
-
-            st.write("### 🍿 Danh Sách Phim Tương Quan Nhất:")
+            st.write("### 🍿 Kết Quả Tìm Kiếm:")
             for rank, movie in enumerate(movies, start=1):
-                render_movie(movie.get("rank", rank), movie)
+                render_movie(movie.get("rank", rank), movie, show_debug=debug_mode)
 
     except ValueError as exc:
         st.warning(f"⚠️ Tham số không hợp lệ: {exc}")
     except requests.Timeout:
         st.error("❌ Search API phản hồi quá thời gian. Vui lòng thử lại.")
-    except requests.HTTPError:
-        logger.exception("Search API trả về lỗi HTTP tại %s", API_URL)
-        st.error("❌ Search API chưa sẵn sàng. Hãy kiểm tra /ready và index Qdrant.")
     except requests.RequestException:
         logger.exception("Không thể gọi Search API tại %s", API_URL)
-        st.error(
-            "❌ Không kết nối được Search API. "
-            "Hãy khởi động FastAPI và kiểm tra MOVIESCOUT_API_URL."
-        )
-    except Exception:
-        logger.exception("Tìm kiếm gặp sự cố hệ thống")
-        st.error(
-            "❌ Dịch vụ tìm kiếm tạm thời không sẵn sàng. "
-            "Vui lòng kiểm tra lại kết nối Qdrant/API Key và thử lại."
-        )
+        st.error(f"❌ Không kết nối được Search API tại {API_URL}. Vui lòng khởi động backend API.")

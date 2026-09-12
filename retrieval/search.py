@@ -1,25 +1,26 @@
-"""Orchestrator của production retrieval: Dense + BM25 → RRF → Cross-Encoder."""
+"""Two-stage hybrid retrieval orchestrator: Dense + BM25 → RRF → Cross-Encoder."""
 
+import logging
 import re
+import time
 from typing import Any
 
 from .config import settings
 from .query import QueryEncoder
-from .ranking import add_display_scores, reciprocal_rank_fusion, to_movies
+from .ranking import rank_movies, reciprocal_rank_fusion, to_movies
 from .rerank import CrossEncoderReranker
 from .store import hybrid_search
 
+logger = logging.getLogger(__name__)
+
 
 def parse_year(value: str) -> tuple[int, int]:
-    """Phân tích năm đơn hoặc khoảng năm trong khoảng hợp lệ của dữ liệu phim."""
-
+    """Phân tích năm đơn hoặc khoảng năm (ví dụ: 2014 hoặc 2010-2020)."""
     if not isinstance(value, str):
-        raise ValueError("Định dạng năm không hợp lệ. Dùng YYYY hoặc YYYY-YYYY, ví dụ 2010-2020.")
+        raise TypeError("Định dạng năm phải là chuỗi ký tự.")
     match = re.fullmatch(r"\s*(\d{4})(?:\s*(?:-|to)\s*(\d{4}))?\s*", value, re.IGNORECASE)
     if not match:
-        raise ValueError(
-            "Định dạng năm không hợp lệ. Dùng YYYY hoặc YYYY-YYYY, ví dụ 2010-2020."
-        )
+        raise ValueError("Định dạng năm không hợp lệ. Dùng YYYY hoặc YYYY-YYYY, ví dụ 2010-2020.")
 
     start = int(match.group(1))
     end = int(match.group(2) or match.group(1))
@@ -32,7 +33,6 @@ def parse_year(value: str) -> tuple[int, int]:
 
 def build_filter(genre: str = "", year: str = "") -> Any | None:
     """Tạo filter genre exact-match không phân biệt hoa thường và year range."""
-
     normalized_genre = genre.strip()
     normalized_year = year.strip()
     filter_values: list[tuple[str, Any]] = []
@@ -49,7 +49,6 @@ def build_filter(genre: str = "", year: str = "") -> Any | None:
     conditions: list[Any] = []
     for field, value in filter_values:
         if field == "genre":
-            # genres trong payload là mảng keyword; MatchValue kiểm tra phần tử chính xác.
             conditions.append(
                 models.FieldCondition(
                     key="genre_keys",
@@ -69,7 +68,7 @@ def build_filter(genre: str = "", year: str = "") -> Any | None:
 
 
 class MovieSearch:
-    """Chạy canonical online retrieval, không route query và không gọi LLM."""
+    """Pipeline Hybrid Movie Retrieval: Dense + BM25 -> RRF -> Cross-Encoder."""
 
     def __init__(
         self,
@@ -77,12 +76,6 @@ class MovieSearch:
         reranker: CrossEncoderReranker | None = None,
     ) -> None:
         self.encoder = encoder or QueryEncoder()
-        model_name = getattr(self.encoder, "dense_model_name", None)
-        dimension = getattr(self.encoder, "dense_dimension", None)
-        if isinstance(model_name, str) and model_name != settings.dense_model:
-            raise RuntimeError("QueryEncoder không tương thích với dense model/index contract.")
-        if isinstance(dimension, (int, float)) and int(dimension) != settings.dense_dimension:
-            raise RuntimeError("QueryEncoder không tương thích với dense model/index contract.")
         self.reranker = reranker
 
     def _candidates(
@@ -91,8 +84,7 @@ class MovieSearch:
         sparse_vector: tuple[list[int], list[float]],
         query_filter: Any | None,
     ) -> list[dict[str, Any]]:
-        """Lấy 50 kết quả mỗi nhánh, fusion rồi giữ 30 candidate đầu."""
-
+        """Thu thập candidate từ hai nhánh Dense và Sparse, sau đó fusion bằng RRF."""
         dense, sparse = hybrid_search(
             dense_vector,
             sparse_vector,
@@ -102,22 +94,20 @@ class MovieSearch:
         fused = reciprocal_rank_fusion(
             dense,
             sparse,
-            limit=settings.candidate_k,
+            limit=settings.rerank_k,
             rrf_k=settings.rrf_k,
         )
         return to_movies(fused)
 
     def _get_reranker(self) -> CrossEncoderReranker:
-        """Nạp lười Cross-Encoder, nhưng luôn dùng nó trong production path."""
-
+        """Nạp lười Cross-Encoder reranker."""
         if self.reranker is None:
             self.reranker = CrossEncoderReranker()
         return self.reranker
 
     @staticmethod
     def _public_movie(movie: dict[str, Any], debug: bool = False) -> dict[str, Any]:
-        """Loại evidence nội bộ khỏi response thông thường."""
-
+        """Tạo đối tượng movie gọn gàng cho public response."""
         public_fields = (
             "movie_id",
             "title",
@@ -132,16 +122,17 @@ class MovieSearch:
             "popularity",
             "poster_path",
             "rank",
-            "rerank_score",
-            "display_score",
         )
         result = {field: movie[field] for field in public_fields if field in movie}
+        if "rerank_score" in movie:
+            result["rerank_score"] = movie["rerank_score"]
         if debug:
             result["evidence"] = {
                 "dense_rank": movie.get("dense_rank"),
                 "sparse_rank": movie.get("sparse_rank"),
                 "rrf_rank": movie.get("rrf_rank"),
                 "rrf_score": movie.get("rrf_score"),
+                "rerank_score": movie.get("rerank_score"),
             }
         return result
 
@@ -153,23 +144,36 @@ class MovieSearch:
         year: str = "",
         debug: bool = False,
     ) -> dict[str, Any]:
-        """Tìm phim theo pipeline cố định Dense/BM25 → RRF → Cross-Encoder."""
+        """Tìm kiếm phim qua pipeline 2-stage hybrid retrieval."""
+        started = time.perf_counter()
 
+        clean_query = QueryEncoder.clean_query(query)
+        if not clean_query:
+            raise ValueError("Truy vấn tìm kiếm không được để trống hoặc chỉ chứa ký tự đặc biệt.")
         if not 0 < top_n <= settings.rerank_k:
             raise ValueError(f"top_n phải nằm trong khoảng 1-{settings.rerank_k}.")
 
-        # Kiểm tra filter trước khi chạy bước mã hóa tốn tài nguyên.
         query_filter = build_filter(genre, year)
         clean_query, dense_vector, sparse_vector = self.encoder.encode(query)
         candidates = self._candidates(dense_vector, sparse_vector, query_filter)
-        if not candidates:
-            return {"query": clean_query, "results": [], "index_version": settings.index_version}
 
-        # Cross-Encoder chỉ thấy fusion candidates; không rerank toàn bộ catalog.
+        if not candidates:
+            latency_ms = round((time.perf_counter() - started) * 1000, 2)
+            return {"query": clean_query, "results": [], "latency_ms": latency_ms}
+
+        # Stage 2: Cross-Encoder reranking trên candidate set nhỏ
         reranked = self._get_reranker().rerank(clean_query, candidates[: settings.rerank_k])
-        results = add_display_scores(reranked, top_n)
+        results = rank_movies(reranked, top_n=top_n)
+
+        latency_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.info(
+            "Search thành công: query='%s', results=%d, latency=%.2f ms",
+            clean_query,
+            len(results),
+            latency_ms,
+        )
         return {
             "query": clean_query,
             "results": [self._public_movie(movie, debug) for movie in results],
-            "index_version": settings.index_version,
+            "latency_ms": latency_ms,
         }

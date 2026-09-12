@@ -1,4 +1,4 @@
-"""Tầng truy cập Qdrant cho alias index hiện tại."""
+"""Tầng truy cập Qdrant cho Dense và Sparse retrieval."""
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -6,7 +6,6 @@ from functools import lru_cache
 from typing import Any
 
 from .config import settings
-from .manifest import load_manifest, validate_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +13,6 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=1)
 def get_client() -> Any:
     """Tạo một Qdrant client dùng chung trong process."""
-
     from qdrant_client import QdrantClient
 
     settings.require_qdrant()
@@ -25,76 +23,14 @@ def get_client() -> Any:
     )
 
 
-def _collection_dense_size(collection_info: Any) -> int | None:
-    """Đọc số chiều dense từ các dạng response Qdrant khác nhau."""
-
-    try:
-        vectors = collection_info.config.params.vectors
-        dense = vectors.get("dense") if isinstance(vectors, dict) else vectors
-        return int(dense.size)
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def validate_index_contract(client: Any | None = None) -> dict[str, Any]:
-    """Kiểm tra manifest, alias, point count và dense dimension trước khi query."""
-
-    manifest = load_manifest()
-    validate_manifest(manifest)
+def check_collection_exists(client: Any | None = None) -> None:
+    """Kiểm tra collection đã được khởi tạo hay chưa."""
     qdrant = client or get_client()
-    try:
-        aliases = qdrant.get_aliases().aliases
-        active_collection = next(
-            (item.collection_name for item in aliases if item.alias_name == settings.index_alias),
-            None,
-        )
-        if active_collection != manifest["collection"]:
-            raise RuntimeError(
-                f"Alias {settings.index_alias!r} đang trỏ tới {active_collection!r}, "
-                f"manifest yêu cầu {manifest['collection']!r}."
-            )
-        collection_info = qdrant.get_collection(settings.index_alias)
-        count = int(qdrant.count(collection_name=settings.index_alias, exact=True).count)
-    except Exception as exc:
-        raise RuntimeError("Alias/index Qdrant chưa sẵn sàng.") from exc
-
-    if count != int(manifest["point_count"]):
+    if not qdrant.collection_exists(settings.collection_name):
         raise RuntimeError(
-            "Point count của index không khớp manifest: "
-            f"expected={manifest['point_count']}, actual={count}."
+            f"Collection Qdrant '{settings.collection_name}' không tồn tại. "
+            "Vui lòng chạy 'python -m scripts.build_index' trước khi tìm kiếm."
         )
-    dense_size = _collection_dense_size(collection_info)
-    if dense_size is None:
-        raise RuntimeError("Không đọc được dense dimension của collection Qdrant.")
-    if dense_size != settings.dense_dimension:
-        raise RuntimeError(
-            "Dense dimension của index không khớp model: "
-            f"expected={settings.dense_dimension}, actual={dense_size}."
-        )
-    if manifest["collection"] == settings.index_alias:
-        raise RuntimeError("Manifest phải trỏ tới collection versioned, không phải alias phục vụ traffic.")
-    return manifest
-
-
-@lru_cache(maxsize=1)
-def ensure_index_contract() -> dict[str, Any]:
-    """Validate contract một lần cho process để không count exact ở mỗi query."""
-
-    return validate_index_contract()
-
-
-def check_readiness() -> dict[str, Any]:
-    """Trả thông tin readiness khi toàn bộ model/index contract hợp lệ."""
-
-    # Readiness chủ động kiểm tra lại để phát hiện alias đổi sau khi process chạy.
-    ensure_index_contract.cache_clear()
-    manifest = ensure_index_contract()
-    return {
-        "status": "ready",
-        "index_version": manifest["index_version"],
-        "collection": manifest["collection"],
-        "point_count": manifest["point_count"],
-    }
 
 
 def _query(
@@ -102,17 +38,13 @@ def _query(
     vector_name: str,
     limit: int,
     query_filter: Any | None = None,
-    *,
-    check_contract: bool = True,
 ) -> list[dict[str, Any]]:
-    """Query một vector space trên alias đã được kiểm tra contract."""
-
+    """Query một vector space trên Qdrant collection."""
     if limit <= 0:
         return []
-    if check_contract:
-        ensure_index_contract()
+
     response = get_client().query_points(
-        collection_name=settings.index_alias,
+        collection_name=settings.collection_name,
         using=vector_name,
         query=vector,
         query_filter=query_filter,
@@ -134,17 +66,13 @@ def dense_search(
     vector: list[float],
     query_filter: Any | None = None,
     limit: int | None = None,
-    *,
-    check_contract: bool = True,
 ) -> list[dict[str, Any]]:
     """Tìm ứng viên theo dense vector."""
-
     return _query(
         vector,
         "dense",
         settings.retrieval_k if limit is None else limit,
         query_filter,
-        check_contract=check_contract,
     )
 
 
@@ -152,11 +80,8 @@ def sparse_search(
     vector: tuple[list[int], list[float]],
     query_filter: Any | None = None,
     limit: int | None = None,
-    *,
-    check_contract: bool = True,
 ) -> list[dict[str, Any]]:
     """Tìm ứng viên theo sparse BM25 vector."""
-
     from qdrant_client import models
 
     sparse = models.SparseVector(indices=vector[0], values=vector[1])
@@ -165,7 +90,6 @@ def sparse_search(
         "sparse",
         settings.retrieval_k if limit is None else limit,
         query_filter,
-        check_contract=check_contract,
     )
 
 
@@ -175,41 +99,18 @@ def hybrid_search(
     query_filter: Any | None = None,
     limit: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Chạy song song hai nhánh, cho phép graceful degradation một nhánh."""
-
+    """Chạy song song hai nhánh Dense và Sparse trên Qdrant."""
     search_limit = settings.retrieval_k if limit is None else limit
     if search_limit <= 0:
         return [], []
 
-    # Verify một lần trước khi fan-out để không nhân đôi request readiness.
-    ensure_index_contract()
+    check_collection_exists()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {
-            "dense": pool.submit(
-                dense_search,
-                dense_vector,
-                query_filter,
-                search_limit,
-                check_contract=False,
-            ),
-            "sparse": pool.submit(
-                sparse_search,
-                sparse_vector,
-                query_filter,
-                search_limit,
-                check_contract=False,
-            ),
-        }
-        results: dict[str, list[dict[str, Any]]] = {"dense": [], "sparse": []}
-        errors: list[Exception] = []
-        for name, future in futures.items():
-            try:
-                results[name] = future.result()
-            except Exception as exc:
-                logger.exception("Nhánh retrieval %s gặp lỗi", name)
-                errors.append(exc)
+        future_dense = pool.submit(dense_search, dense_vector, query_filter, search_limit)
+        future_sparse = pool.submit(sparse_search, sparse_vector, query_filter, search_limit)
 
-    if len(errors) == 2:
-        raise RuntimeError("Không thể truy vấn Qdrant ở cả hai nhánh dense và sparse.") from errors[0]
-    return results["dense"], results["sparse"]
+        dense_results = future_dense.result()
+        sparse_results = future_sparse.result()
+
+    return dense_results, sparse_results

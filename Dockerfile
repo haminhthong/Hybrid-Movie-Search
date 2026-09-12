@@ -5,8 +5,8 @@ COPY app app
 COPY pipeline pipeline
 COPY retrieval retrieval
 COPY evaluation evaluation
-COPY experiments experiments
 COPY scripts scripts
+COPY ui ui
 RUN pip install --no-cache-dir .
 COPY . .
 EXPOSE 8000 8501

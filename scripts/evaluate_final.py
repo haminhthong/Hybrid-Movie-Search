@@ -1,15 +1,14 @@
-"""CLI chạy Locked Test sau khi đã freeze cấu hình."""
+"""CLI đánh giá mô hình trên Test set."""
 
-from evaluation.benchmark import DEFAULT_LOCKED, evaluate_split
+from evaluation.benchmark import DEFAULT_TEST, evaluate_split
 from evaluation.judgments import load_judgments
 
 
 def main() -> None:
-    """Đánh giá Locked Test sau khi cấu hình đã freeze."""
-
+    """Đánh giá ablation trên Test set."""
     evaluate_split(
-        load_judgments(DEFAULT_LOCKED),
-        output_dir=DEFAULT_LOCKED.parent / "reports" / "locked_test",
+        load_judgments(DEFAULT_TEST),
+        output_dir=DEFAULT_TEST.parent / "reports" / "test",
     )
 
 

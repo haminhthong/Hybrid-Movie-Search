@@ -1,11 +1,10 @@
-"""Test FastAPI liveness, validation và search response contract."""
+"""Test FastAPI endpoints và response validation."""
 
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 from app.api import app
-from retrieval.config import settings
 
 client = TestClient(app)
 
@@ -22,8 +21,8 @@ def test_search_endpoint_validation_error():
 
 
 def test_search_endpoint_success_mocked():
-    mock_service = MagicMock()
-    mock_service.search.return_value = {
+    mock_engine = MagicMock()
+    mock_engine.search.return_value = {
         "query": "astronauts traveling through wormhole",
         "results": [
             {
@@ -41,13 +40,11 @@ def test_search_endpoint_success_mocked():
                 "poster_path": "/poster.jpg",
                 "rank": 1,
                 "rerank_score": 6.42,
-                "display_score": 1.0,
             }
         ],
-        "index_version": settings.index_version,
         "latency_ms": 42.5,
     }
-    with patch("app.api.get_service", return_value=mock_service):
+    with patch("app.api.get_search_engine", return_value=mock_engine):
         response = client.post(
             "/search",
             json={"query": "astronauts traveling through wormhole", "top_n": 5},
@@ -56,4 +53,4 @@ def test_search_endpoint_success_mocked():
         data = response.json()
         assert data["results"][0]["title"] == "Interstellar"
         assert data["results"][0]["genres"] == ["Adventure", "Drama", "Science Fiction"]
-        assert data["index_version"] == settings.index_version
+        assert data["latency_ms"] == 42.5

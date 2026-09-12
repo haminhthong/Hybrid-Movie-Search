@@ -1,12 +1,11 @@
 """Metric IR cho known-item và thematic multi-relevance queries."""
 
 import math
-from typing import Iterable
+from collections.abc import Iterable
 
 
 def dcg_at_k(relevances: Iterable[int | float], k: int = 10) -> float:
-    """Tính DCG dùng gain graded ``2^rel - 1``."""
-
+    """Tính DCG dùng gain graded 2^rel - 1."""
     if k <= 0:
         return 0.0
     return sum(
@@ -17,7 +16,6 @@ def dcg_at_k(relevances: Iterable[int | float], k: int = 10) -> float:
 
 def ndcg_at_k(retrieved_ids: list[str], judgments: dict[str, int], k: int = 10) -> float:
     """Tính nDCG@k cho relevance judgments graded."""
-
     actual = [judgments.get(str(movie_id), 0) for movie_id in retrieved_ids[:k]]
     ideal = sorted(judgments.values(), reverse=True)[:k]
     ideal_dcg = dcg_at_k(ideal, k)
@@ -26,7 +24,6 @@ def ndcg_at_k(retrieved_ids: list[str], judgments: dict[str, int], k: int = 10) 
 
 def reciprocal_rank_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int = 10) -> float:
     """Tính MRR@k cho query có một hoặc nhiều positive."""
-
     for position, movie_id in enumerate(retrieved_ids[:k], start=1):
         if str(movie_id) in relevant_ids:
             return 1.0 / position
@@ -35,7 +32,6 @@ def reciprocal_rank_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: in
 
 def recall_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int = 10) -> float:
     """Tính Recall@k trên toàn bộ relevant set."""
-
     if not relevant_ids:
         return 0.0
     found = relevant_ids.intersection({str(movie_id) for movie_id in retrieved_ids[:k]})
@@ -47,8 +43,7 @@ def evaluate_ranking(
     judgments: dict[str, int],
     candidate_ids: list[str] | None = None,
 ) -> dict[str, float]:
-    """Tính metric hierarchy; Recall@50 có thể dùng pool trước rerank."""
-
+    """Tính metric hierarchy (nDCG, MRR, Recall, Hit)."""
     relevant_ids = {movie_id for movie_id, grade in judgments.items() if grade > 0}
     candidate_ranking = retrieved_ids if candidate_ids is None else candidate_ids
     return {

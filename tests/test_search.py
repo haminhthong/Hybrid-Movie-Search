@@ -1,4 +1,4 @@
-"""Test orchestration canonical và metadata filters."""
+"""Test orchestration của MovieSearch và metadata filters."""
 
 from unittest.mock import MagicMock, patch
 
@@ -60,7 +60,5 @@ def test_movie_search_runs_rrf_then_cross_encoder(mock_hybrid_search):
     assert response["query"] == "clean query"
     assert response["results"][0]["title"] == "Interstellar"
     assert response["results"][0]["rank"] == 1
-    assert response["results"][0]["rerank_score"] == 4.2
-    assert "route" not in response
-    assert "hyde" not in response
+    assert "latency_ms" in response
     reranker.rerank.assert_called_once()

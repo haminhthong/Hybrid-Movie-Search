@@ -1,4 +1,4 @@
-"""Chuẩn hóa snapshot TMDB thành movie documents versioned."""
+"""Chuẩn hóa dữ liệu phim TMDB thành movie documents phục vụ retrieval."""
 
 import json
 import logging
@@ -7,10 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
-from retrieval.config import DOCUMENT_SCHEMA_VERSION
-
-from .manifest import update_dataset_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +21,6 @@ REQUIRED_COLUMNS: set[str] = {
     "title",
     "overview",
     "release_date",
-    "dataset_version",
     *TEXT_FIELDS,
 }
 DOCUMENT_FIELDS: tuple[tuple[str, str], ...] = (
@@ -39,12 +34,7 @@ DOCUMENT_FIELDS: tuple[tuple[str, str], ...] = (
 
 
 def clean_text(value: Any) -> str:
-    """Xóa HTML/URL, chuẩn hóa khoảng trắng và chuyển text sang lowercase.
-
-    Hàm này giữ hành vi cũ để dùng cho tokenization/test. Metadata hiển thị được
-    xử lý bằng ``_clean_metadata`` để không làm mất chữ hoa trong tên riêng.
-    """
-
+    """Xóa HTML/URL, chuẩn hóa khoảng trắng và chuyển text sang lowercase."""
     if not isinstance(value, str) or pd.isna(value):
         return ""
     text = re.sub(r"<[^>]+>", " ", value)
@@ -54,7 +44,6 @@ def clean_text(value: Any) -> str:
 
 def _clean_metadata(value: Any) -> str:
     """Làm sạch metadata nhưng giữ nguyên cách viết tên phim/người."""
-
     if value is None or (not isinstance(value, (list, tuple)) and pd.isna(value)):
         return ""
     text = re.sub(r"<[^>]+>", " ", str(value))
@@ -63,8 +52,7 @@ def _clean_metadata(value: Any) -> str:
 
 
 def parse_list_value(value: Any) -> list[str]:
-    """Đọc metadata dạng list JSON/list Python hoặc chuỗi comma-separated cũ."""
-
+    """Đọc metadata dạng list JSON/list Python hoặc chuỗi comma-separated."""
     if value is None or (not isinstance(value, (list, tuple)) and pd.isna(value)):
         return []
     if isinstance(value, (list, tuple)):
@@ -87,15 +75,13 @@ def parse_list_value(value: Any) -> list[str]:
 
 def _document_value(field: str, value: Any) -> str:
     """Chuyển field scalar/list thành text nhất quán cho embedding."""
-
     if field in LIST_FIELDS:
         return ", ".join(parse_list_value(value))
     return _clean_metadata(value)
 
 
 def create_combined_text(row: pd.Series) -> str:
-    """Tạo một search document duy nhất cho mỗi movie theo schema cố định."""
-
+    """Tạo một search document duy nhất cho mỗi movie (1 movie = 1 document)."""
     parts = []
     for field, label in DOCUMENT_FIELDS:
         value = _document_value(field, row.get(field, ""))
@@ -106,7 +92,6 @@ def create_combined_text(row: pd.Series) -> str:
 
 def _release_years(dataframe: pd.DataFrame) -> pd.Series:
     """Lấy release year từ ngày, có fallback sang cột release_year."""
-
     years = pd.to_numeric(dataframe["release_date"].astype(str).str[:4], errors="coerce")
     if "release_year" in dataframe.columns:
         years = years.fillna(pd.to_numeric(dataframe["release_year"], errors="coerce"))
@@ -117,8 +102,7 @@ def process_documents(
     input_file: Path = INPUT_FILE,
     output_file: Path = OUTPUT_FILE,
 ) -> pd.DataFrame:
-    """Validate, clean và ghi canonical movie table."""
-
+    """Validate, clean và ghi bảng movie documents chuẩn."""
     input_path = Path(input_file)
     output_path = Path(output_file)
     if not input_path.exists():
@@ -130,21 +114,11 @@ def process_documents(
         raise ValueError(f"Dữ liệu thiếu các cột bắt buộc: {', '.join(sorted(missing))}")
 
     before_count = len(dataframe)
-    dataset_versions = {
-        str(value).strip()
-        for value in dataframe["dataset_version"].dropna().tolist()
-        if str(value).strip()
-    }
-    if len(dataset_versions) != 1:
-        raise ValueError("Canonical table phải chứa đúng một dataset_version không rỗng.")
-    dataset_version = dataset_versions.pop()
-    dataframe["dataset_version"] = dataset_version
     dataframe["movie_id"] = pd.to_numeric(dataframe["movie_id"], errors="coerce")
     dataframe = dataframe.dropna(subset=["movie_id"]).copy()
     dataframe["movie_id"] = dataframe["movie_id"].astype(int)
     dataframe = dataframe[dataframe["movie_id"] > 0]
 
-    # Scalar giữ cách viết để response đẹp; search document vẫn có cấu trúc label.
     for field in ("title", "overview", "director"):
         dataframe[field] = dataframe[field].map(_clean_metadata)
     for field in LIST_FIELDS:
@@ -154,7 +128,6 @@ def process_documents(
 
     dataframe["release_year"] = _release_years(dataframe)
     dataframe["combined_text"] = dataframe.apply(create_combined_text, axis=1)
-    dataframe["document_schema_version"] = DOCUMENT_SCHEMA_VERSION
     dataframe = dataframe[
         (dataframe["title"].str.len() > 0)
         & (dataframe["overview"].str.len() > 0)
@@ -165,12 +138,6 @@ def process_documents(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     dataframe.to_csv(output_path, index=False, encoding="utf-8")
-    update_dataset_manifest(
-        dataset_version,
-        output_path,
-        clean_movie_count=len(dataframe),
-        document_schema_version=DOCUMENT_SCHEMA_VERSION,
-    )
     logger.info(
         "Làm sạch hoàn tất: %d/%d bản ghi hợp lệ, output=%s",
         len(dataframe),

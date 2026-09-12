@@ -1,4 +1,4 @@
-"""Rank fusion và chuyển payload Qdrant thành movie document nội bộ."""
+"""Rank fusion và chuyển payload Qdrant thành movie document có cấu trúc."""
 
 import json
 from collections import defaultdict
@@ -13,13 +13,11 @@ def reciprocal_rank_fusion(
     limit: int | None = None,
     rrf_k: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Gộp hai danh sách bằng RRF với thứ hạng 1-based.
+    """Gộp hai danh sách bằng Reciprocal Rank Fusion (RRF) với thứ hạng 1-based.
 
-    Điểm RRF chỉ dùng để xếp hạng ứng viên, không được coi là confidence hay
-    xác suất kết quả đúng. Kết quả có thêm rank từng nhánh để phục vụ debug/evaluation.
+    Score RRF = sum(1 / (k + rank)) cho từng nhánh.
     """
-
-    max_candidates = settings.candidate_k if limit is None else limit
+    max_candidates = settings.rerank_k if limit is None else limit
     if max_candidates <= 0:
         return []
     smooth = settings.rrf_k if rrf_k is None else rrf_k
@@ -62,13 +60,10 @@ def reciprocal_rank_fusion(
 
 
 def _as_list(value: Any) -> list[str]:
-    """Đọc mảng metadata từ JSON, list Python hoặc CSV cũ."""
-
+    """Đọc mảng metadata từ JSON hoặc list."""
     if value is None:
         return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [str(item).strip() for item in value if str(item).strip()]
     text = str(value).strip()
     if not text or text.lower() == "nan":
@@ -83,8 +78,7 @@ def _as_list(value: Any) -> list[str]:
 
 
 def _as_int(value: Any, default: int = 0) -> int:
-    """Chuyển số nguyên từ payload mà không làm hỏng toàn bộ result set."""
-
+    """Chuyển số nguyên từ payload một cách an toàn."""
     try:
         return int(float(value))
     except (TypeError, ValueError):
@@ -93,7 +87,6 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 def _as_float(value: Any, default: float = 0.0) -> float:
     """Chuyển số thực từ payload một cách an toàn."""
-
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -102,7 +95,6 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 def to_movies(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Chuyển payload Qdrant thành movie document có metadata có cấu trúc."""
-
     movies: list[dict[str, Any]] = []
     seen: set[Any] = set()
 
@@ -143,13 +135,8 @@ def to_movies(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return movies
 
 
-def add_display_scores(movies: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
-    """Gắn rank và ``display_score`` tương đối trong chính result set.
-
-    ``display_score`` chỉ phục vụ UI, không dùng để route, reject query hay so
-    sánh chất lượng giữa hai query khác nhau.
-    """
-
+def rank_movies(movies: list[dict[str, Any]], top_n: int = 10) -> list[dict[str, Any]]:
+    """Sắp xếp danh sách phim theo điểm rerank hoặc RRF và gán rank 1-based."""
     if not movies or top_n <= 0:
         return []
 
@@ -161,19 +148,6 @@ def add_display_scores(movies: list[dict[str, Any]], top_n: int) -> list[dict[st
             int(movie.get("movie_id") or 0),
         ),
     )
-    scores = [float(movie.get("rerank_score", movie.get("rrf_score", 0.0))) for movie in ranked]
-    low, high = min(scores), max(scores)
-    for rank, movie in enumerate(ranked, start=1):
-        score = float(movie.get("rerank_score", movie.get("rrf_score", 0.0)))
+    for rank, movie in enumerate(ranked[:top_n], start=1):
         movie["rank"] = rank
-        movie["display_score"] = round(1.0 if high == low else (score - low) / (high - low), 4)
     return ranked[:top_n]
-
-
-def normalize_scores(movies: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
-    """Tên tương thích cũ cho ``add_display_scores``.
-
-    Không còn tạo ``final_score`` vì min-max theo từng query không phải confidence.
-    """
-
-    return add_display_scores(movies, top_n)

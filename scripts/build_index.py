@@ -1,11 +1,10 @@
-"""CLI build shadow index và release alias."""
+"""CLI build hybrid index (Dense + Sparse) vào Qdrant."""
 
 from pipeline.dual_embedding_qdrant import process_dual_embedding
 
 
 def main() -> None:
-    """Build và release index."""
-
+    """Build hybrid index vào Qdrant."""
     process_dual_embedding()
 
 

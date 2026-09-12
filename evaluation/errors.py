@@ -2,7 +2,6 @@
 
 from typing import Any
 
-
 FAILURE_STAGES = (
     "NOT_RETRIEVED",
     "FUSION_DROPPED",
@@ -23,7 +22,6 @@ def classify_failure(
     filters_applied: bool = False,
 ) -> str | None:
     """Xác định stage đầu tiên làm mất relevant item."""
-
     if not relevant_ids.intersection(catalog_ids):
         return "CATALOG_MISSING"
     if filters_applied and not relevant_ids.intersection(dense_ids | sparse_ids):
@@ -39,7 +37,6 @@ def classify_failure(
 
 def rank_map(items: list[dict[str, Any]]) -> dict[str, int]:
     """Tạo map movie_id → rank từ output retrieval."""
-
     return {
         str(item.get("movie_id")): rank
         for rank, item in enumerate(items, start=1)
@@ -53,7 +50,6 @@ def rerank_gain_harm(
     relevant_ids: set[str],
 ) -> dict[str, float]:
     """Đo số query/item được reranker cải thiện hoặc làm xấu đi."""
-
     before_ranks = rank_map(before)
     after_ranks = rank_map(after)
     deltas = [

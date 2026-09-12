@@ -1,7 +1,7 @@
 """Test metric hierarchy cho graded relevance."""
 
-from evaluation.metrics import evaluate_ranking, ndcg_at_k
 from evaluation.errors import rerank_gain_harm
+from evaluation.metrics import evaluate_ranking, ndcg_at_k
 
 
 def test_ndcg_rewards_graded_relevance():
@@ -12,7 +12,7 @@ def test_ndcg_rewards_graded_relevance():
 
 def test_evaluation_returns_primary_and_candidate_metrics():
     metrics = evaluate_ranking(["x", "b", "a"], {"a": 3, "b": 2})
-    assert set(("ndcg@10", "mrr@10", "recall@10", "recall@50")).issubset(metrics)
+    assert {"ndcg@10", "mrr@10", "recall@10", "recall@50"}.issubset(metrics)
     assert metrics["mrr@10"] == 0.5
 
 

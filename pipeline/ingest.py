@@ -16,8 +16,6 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-from .manifest import write_dataset_manifest
-
 logger = logging.getLogger(__name__)
 load_dotenv()
 
@@ -92,14 +90,11 @@ def fetch_movie_details(movie_id: int) -> dict[str, Any]:
         time.sleep(REQUEST_DELAY)
 
     crew = data.get("credits", {}).get("crew", [])
-    # Tìm thông tin Đạo diễn trong danh sách crew
     director = next(
         (member.get("name", "") for member in crew if member.get("job") == "Director"),
         "",
     )
-    # Lấy top 5 diễn viên đầu tiên
     cast = [member.get("name", "") for member in data.get("credits", {}).get("cast", [])[:5]]
-    # Lấy danh sách từ khóa
     keywords = [item.get("name", "") for item in data.get("keywords", {}).get("keywords", [])]
 
     return {
@@ -198,38 +193,15 @@ def fetch_tmdb_movies_by_year(
         logger.warning("TMDB API không trả về phim nào trong khoảng thời gian cấu hình.")
         return dataframe
 
-    # Khử trùng lặp và làm sạch tối thiểu.
     dataframe["overview"] = dataframe["overview"].fillna("").astype(str)
     dataframe = dataframe[dataframe["overview"].str.strip().str.len() > 0]
     dataframe = dataframe.drop_duplicates(subset=["movie_id"], keep="first")
-
-    dataset_version = f"tmdb-{pd.Timestamp.utcnow().strftime('%Y%m%d')}"
-    dataframe["dataset_version"] = dataset_version
 
     output_file = Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     dataframe.to_csv(output_file, index=False, encoding="utf-8")
 
-    dataset_version = f"tmdb-{pd.Timestamp.utcnow().strftime('%Y%m%d')}"
-    manifest_path = write_dataset_manifest(
-        output_file,
-        dataset_version=dataset_version,
-        start_year=start_year,
-        end_year=end_year,
-        filters={
-            "overview_required": True,
-            "sort_by": "popularity.desc",
-            "max_pages_per_year": max_pages_per_year,
-        },
-        movie_count=len(dataframe),
-    )
-
-    logger.info(
-        "Ingestion hoàn tất: %d phim, snapshot=%s, manifest=%s",
-        len(dataframe),
-        output_file,
-        manifest_path,
-    )
+    logger.info("Ingestion hoàn tất: %d phim được lưu vào %s", len(dataframe), output_file)
     return dataframe
 
 

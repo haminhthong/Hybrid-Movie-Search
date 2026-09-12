@@ -1,4 +1,4 @@
-"""FastAPI cho production hybrid movie retrieval."""
+"""FastAPI cho Hybrid Movie Retrieval API."""
 
 import logging
 from functools import lru_cache
@@ -8,29 +8,25 @@ from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from retrieval.config import settings
-from retrieval.service import SearchService
-from retrieval.store import check_readiness
+from retrieval.search import MovieSearch
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="MovieScout Hybrid Retrieval API",
-    description=(
-        "Tìm kiếm phim bằng BM25 và dense retrieval, RRF fusion, "
-        "Cross-Encoder reranking và bộ lọc metadata. V1 hỗ trợ query tiếng Anh."
-    ),
-    version="2.0.0",
+    description="Tìm kiếm phim bằng BM25 và Dense Retrieval, RRF fusion và Cross-Encoder reranking.",
+    version="1.0.0",
 )
 
 
 class SearchRequest(BaseModel):
-    """Request contract của endpoint search."""
+    """Request schema cho endpoint search."""
 
     query: str = Field(
         ...,
         min_length=1,
         max_length=500,
-        description="Mô tả nội dung phim bằng tiếng Anh.",
+        description="Mô tả nội dung hoặc chủ đề phim bằng tiếng Anh.",
         json_schema_extra={"example": "A father communicates with his daughter through a black hole"},
     )
     top_n: int = Field(
@@ -40,12 +36,12 @@ class SearchRequest(BaseModel):
         description=f"Số kết quả trả về (1-{settings.rerank_k}).",
     )
     genre: str = Field(default="", max_length=80, description="Genre exact-match, bỏ trống để tìm tất cả.")
-    year: str = Field(default="", max_length=20, description="Năm hoặc khoảng năm, ví dụ 2010-2020.")
-    debug: bool = Field(default=False, description="Expose retrieval evidence nội bộ để debug.")
+    year: str = Field(default="", max_length=20, description="Năm hoặc khoảng năm, ví dụ 2010 hoặc 2010-2020.")
+    debug: bool = Field(default=False, description="Trả về thông tin ranking nội bộ (dense/sparse/RRF) để debug.")
 
 
 class MovieItemResponse(BaseModel):
-    """Movie metadata và điểm rerank của một kết quả."""
+    """Movie metadata của một kết quả tìm kiếm."""
 
     movie_id: int
     title: str
@@ -60,66 +56,34 @@ class MovieItemResponse(BaseModel):
     popularity: float = 0.0
     poster_path: str = ""
     rank: int
-    rerank_score: float = Field(description="Điểm Cross-Encoder, không phải xác suất.")
-    display_score: float = Field(
-        description="Điểm hiển thị tương đối trong chính result set, không dùng để so sánh query."
-    )
+    rerank_score: float | None = None
     evidence: dict[str, Any] | None = None
 
 
 class SearchResponse(BaseModel):
-    """Response contract ổn định cho UI và client."""
+    """Response schema cho kết quả tìm kiếm."""
 
     query: str
     results: list[MovieItemResponse]
-    index_version: str
     latency_ms: float
 
 
 class HealthResponse(BaseModel):
-    """Liveness response, không phụ thuộc Qdrant."""
+    """Health check response."""
 
     status: str = "ok"
-    service: str = "MovieScout Hybrid Retrieval"
-
-
-class ReadyResponse(BaseModel):
-    """Readiness response sau khi kiểm tra model/index contract."""
-
-    status: str
-    index_version: str
-    collection: str
-    point_count: int
 
 
 @lru_cache(maxsize=1)
-def get_service() -> SearchService:
-    """Tạo SearchService một lần cho process API."""
-
-    return SearchService()
+def get_search_engine() -> MovieSearch:
+    """Khởi tạo MovieSearch một lần cho process API."""
+    return MovieSearch()
 
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 def health() -> HealthResponse:
-    """Liveness probe của process."""
-
+    """Liveness probe của dịch vụ."""
     return HealthResponse()
-
-
-@app.get("/ready", response_model=ReadyResponse, tags=["System"])
-def ready() -> ReadyResponse:
-    """Readiness probe: Qdrant, alias, manifest, count và dimension phải hợp lệ."""
-
-    try:
-        return ReadyResponse(**check_readiness())
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("Readiness check gặp lỗi không xác định")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Dịch vụ tìm kiếm gặp lỗi nội bộ.",
-        ) from exc
 
 
 @app.post(
@@ -128,31 +92,28 @@ def ready() -> ReadyResponse:
     tags=["Search"],
     responses={
         422: {"description": "Tham số truy vấn không hợp lệ"},
-        503: {"description": "Qdrant hoặc index contract chưa sẵn sàng"},
-        500: {"description": "Lỗi nội bộ không tiết lộ stack trace"},
+        503: {"description": "Qdrant collection chưa sẵn sàng"},
+        500: {"description": "Lỗi nội bộ hệ thống"},
     },
 )
 def search(request: SearchRequest) -> SearchResponse:
-    """Chạy Dense/BM25 song song, RRF, Cross-Encoder rồi trả top-N."""
-
+    """Chạy Dense/BM25 retrieval song song, RRF fusion và Cross-Encoder reranking."""
     try:
-        # Lấy service sau khi Pydantic đã validate request để lỗi 422 không tải model nặng.
-        service = get_service()
-        return SearchResponse(
-            **service.search(
-                query=request.query,
-                top_n=request.top_n,
-                genre=request.genre,
-                year=request.year,
-                debug=request.debug,
-            )
+        engine = get_search_engine()
+        result = engine.search(
+            query=request.query,
+            top_n=request.top_n,
+            genre=request.genre,
+            year=request.year,
+            debug=request.debug,
         )
+        return SearchResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("Search request gặp lỗi không xác định")
+        logger.exception("Search request gặp sự cố không xác định")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Dịch vụ tìm kiếm gặp lỗi nội bộ.",
