@@ -1,18 +1,15 @@
 # Evaluation contract
 
-Thư mục này tách rõ regression dữ liệu cũ khỏi benchmark dùng để kết luận chất
-lượng retrieval. `eval_queries_200.csv` là **synthetic regression**: giữ lại để
-bắt regression, kiểm tra entity/metadata và sanity check, không dùng làm
-headline benchmark.
+Thư mục này chứa judgments và code benchmark cho pipeline retrieval hiện tại.
+Production search dùng `retrieval/search.py`; benchmark dùng cùng encoder, Qdrant
+retrieval và Cross-Encoder để so sánh bốn pipeline trên cùng query.
 
-Chạy synthetic bằng `python -m evaluation.synthetic`; kết quả được ghi vào
-`evaluation/reports/synthetic/`. Benchmark chính dùng các CLI trong `scripts/`.
+Hai tập dữ liệu:
 
-`dev_queries.jsonl` là tập phát triển dùng để chọn `retrieval_k`, `candidate_k`,
-`rerank_k`, document schema và filter. `locked_test_queries.jsonl` chỉ chạy sau
-khi cấu hình đã freeze; command final không nhận tham số tuning.
+- `dev_queries.jsonl`: dùng để phân tích và điều chỉnh cấu hình.
+- `test_queries.jsonl`: dùng sau khi cấu hình đã ổn định, không dùng để tuning.
 
-Mỗi record JSONL có schema:
+Mỗi record có dạng:
 
 ```json
 {
@@ -23,12 +20,29 @@ Mỗi record JSONL có schema:
 }
 ```
 
-Relevance: `3` rất phù hợp, `2` phù hợp, `1` một phần, `0` không phù hợp.
-Metric chính là `nDCG@10`; known-item dùng thêm `MRR@10`, còn candidate
-generation được theo dõi bằng `Recall@50`. Benchmark B0–B3 dùng cùng một lần
-encode và retrieval cho mỗi query; `latency_ms` là latency end-to-end của lần
-chạy chung đó, không phải phép đo độc lập tuyệt đối của từng branch.
+Relevance `3` là rất phù hợp, `2` phù hợp, `1` một phần và `0` không phù hợp.
+Loader từ chối JSONL lỗi, judgment rỗng và `query_id` trùng.
 
-Kết quả benchmark được ghi vào thư mục output của command, không commit số liệu
-được tạo từ Qdrant không tái lập. Cần review thủ công các judgment trước khi
-dùng số liệu làm claim public.
+Các pipeline benchmark:
+
+- `B0_BM25`: ranking sparse.
+- `B1_DENSE`: ranking dense.
+- `B2_HYBRID_RRF`: hai ranking hợp nhất bằng RRF, giữ tối đa 20 kết quả.
+- `B3_HYBRID_CE`: B2 được Cross-Encoder rerank.
+
+Metric gồm `nDCG@10`, `MRR@10`, `Recall@10`, `Recall@50`, `Hit@1`, `Hit@5`.
+`rerank_gain_harm.csv` ghi số item được cải thiện hoặc bị hạ thứ hạng. Latency
+được đo một lần cho toàn bộ retrieval của query và được lặp lại trên bốn dòng
+pipeline; đây là latency chung, không phải phép đo độc lập tuyệt đối.
+
+Chạy benchmark:
+
+```powershell
+python -m scripts.evaluate_dev
+python -m scripts.evaluate_final
+```
+
+Output được ghi vào `evaluation/reports/dev/` hoặc
+`evaluation/reports/test/`, gồm `benchmark_results.csv`,
+`benchmark_summary.csv` và `rerank_gain_harm.csv`. Các output này được gitignore
+và không nên commit nếu Qdrant hoặc judgment không tái lập.
